@@ -111,7 +111,7 @@
     }
 
     .btn-escola:hover {
-      background: #4e2b0c;
+      background: #035700;
       transform: translateY(-1px)
     }
 
@@ -1746,18 +1746,29 @@
     <div class="login-card hidden" id="formEscola">
       <h2>Acesso da Escola</h2>
       <div class="field-group">
+        <label>Nome da Escola</label>
+        <input type="text" id="escolaNome" placeholder="Ex: Escola Glorita" oninput="onEscolaChange()" />
+      </div>
+      <div class="field-group">
         <label>Nome do Coordenador</label>
         <input type="text" id="escolaCoordenador" placeholder="Nome do coordenador" />
       </div>
+      <!-- Info dinâmica -->
+      <div class="hint-box hidden" id="escolaSenhaInfo" style="margin-bottom:1rem"></div>
       <div class="field-group">
-        <label>Senha de Acesso</label>
+        <label id="escolaSenhaLabel">Senha de Acesso</label>
         <div class="pass-wrap">
           <input type="password" id="escolaSenha" placeholder="••••••••" />
           <button class="eye-btn" onclick="togglePass()">👁</button>
         </div>
       </div>
-      <div class="hint-box">🔑 Primeiro acesso? Senha padrão: <strong>escola123</strong></div>
+      <!-- Confirmar senha — só no primeiro acesso -->
+      <div class="field-group hidden" id="escolaSenhaConfRow">
+        <label>Confirmar Senha</label>
+        <input type="password" id="escolaSenhaConf" placeholder="Repita a senha" />
+      </div>
       <button class="btn btn-escola btn-full" onclick="loginEscola()">Acessar Painel →</button>
+      <p class="login-note">🏫 Cada escola possui sua própria senha</p>
     </div>
 
     <p class="login-footer">© 2025 BiblioEscola</p>
@@ -1871,7 +1882,7 @@
         <div class="sb-avatar">👩‍💼</div>
         <div>
           <p class="sb-name" id="sbNome">—</p>
-          <p class="sb-role">Escola</p>
+          <p class="sb-role" id="sbEscola">Escola</p>
         </div>
         <button class="logout-sm" onclick="logout()" title="Sair">⏻</button>
       </div>
@@ -2126,50 +2137,133 @@
   <!-- Toast -->
   <div id="toast" class="hidden"></div>
 
-  <script>
+  <!-- Firebase SDK -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import {
+      getFirestore, doc, getDoc, setDoc, updateDoc,
+      collection, getDocs, addDoc, deleteDoc, query, where
+    } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
     /* ═══════════════════════════════════════════
-       CAMADA DE DADOS — localStorage
+       FIREBASE CONFIG
     ═══════════════════════════════════════════ */
-    const DB = {
-      get(k) { try { return JSON.parse(localStorage.getItem(k)) || [] } catch { return [] } },
-      set(k, v) { localStorage.setItem(k, JSON.stringify(v)) },
-      getRaw(k, d) { const v = localStorage.getItem(k); return v !== null ? JSON.parse(v) : d },
+    const firebaseConfig = {
+      apiKey: "AIzaSyCstHWPksHJjP_jqTIhJg98PI6t7AucNjI",
+      authDomain: "biblioescola-14f8d.firebaseapp.com",
+      projectId: "biblioescola-14f8d",
+      storageBucket: "biblioescola-14f8d.firebasestorage.app",
+      messagingSenderId: "80392046952",
+      appId: "1:80392046952:web:0b41b52f9148f1a75ceedd"
     };
+    const app = initializeApp(firebaseConfig);
+    const db  = getFirestore(app);
 
-    const KEYS = { BOOKS: 'bk', LOANS: 'ln', PASS: 'ps', PRAZO: 'pr', ACT: 'ac', ALUNO_PASSES: 'ap' };
+    /* ═══════════════════════════════════════════
+       HELPERS DE COLEÇÃO POR ESCOLA
+       Estrutura: escolas/{escolaId}/livros, emprestimos, atividade, config
+                  alunos/{alunoKey}  — global (senha por aluno)
+                  escolas/{escolaId} — doc raiz com senha e prazo
+    ═══════════════════════════════════════════ */
+    function escolaId() {
+      return SESSION?.escola?.trim().toLowerCase().replace(/\s+/g, '_') || '_sem_escola';
+    }
+    function col(sub)  { return collection(db, 'escolas', escolaId(), sub); }
+    function docRef(sub, id) { return doc(db, 'escolas', escolaId(), sub, id); }
+    function escolaDoc() { return doc(db, 'escolas', escolaId()); }
 
-    // Sessão (memória RAM — não persiste ao fechar)
+    // Sessão (memória RAM)
     let SESSION = null;
 
-    /* ── Senhas de Alunos ── */
-    function getAlunoPasses() { try { return JSON.parse(localStorage.getItem(KEYS.ALUNO_PASSES)) || {} } catch { return {} } }
-    function saveAlunoPasses(obj) { localStorage.setItem(KEYS.ALUNO_PASSES, JSON.stringify(obj)) }
-    function alunoPassKey(nome, serie) { return (nome + '|' + serie).toLowerCase() }
-    function getAlunoPass(nome, serie) { return getAlunoPasses()[alunoPassKey(nome, serie)] || null }
-    function setAlunoPass(nome, serie, senha) {
-      const obj = getAlunoPasses();
-      obj[alunoPassKey(nome, serie)] = senha;
-      saveAlunoPasses(obj);
+    // Cache em memória para leituras síncronas durante a sessão
+    let CACHE = { books: null, loans: null, act: null, prazo: null };
+    function invalidate() { CACHE = { books: null, loans: null, act: null, prazo: null }; }
+
+    /* ── Loading overlay ── */
+    function showLoading(msg = 'Carregando...') {
+      let el = document.getElementById('loadingOverlay');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'loadingOverlay';
+        el.style.cssText = 'position:fixed;inset:0;background:rgba(4,61,9,.7);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1rem;color:#fff;font-family:DM Sans,sans-serif;backdrop-filter:blur(4px)';
+        el.innerHTML = '<div style="font-size:2.5rem">📚</div><p id="loadingMsg" style="font-size:1.1rem;font-weight:500"></p><div style="width:40px;height:40px;border:4px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite"></div><style>@keyframes spin{to{transform:rotate(360deg)}}</style>';
+        document.body.appendChild(el);
+      }
+      document.getElementById('loadingMsg').textContent = msg;
+      el.classList.remove('hidden');
     }
-    function alunoTemSenha(nome, serie) { return getAlunoPass(nome, serie) !== null }
+    function hideLoading() {
+      const el = document.getElementById('loadingOverlay');
+      if (el) el.classList.add('hidden');
+    }
 
-    /* ── Livros ── */
-    function getBooks() { return DB.get(KEYS.BOOKS) }
-    function saveBooks(b) { DB.set(KEYS.BOOKS, b) }
-    function getBookById(id) { return getBooks().find(b => b.id === id) || null }
+    /* ═══════════════════════════════════════════
+       SENHAS DE ALUNOS — coleção global "alunos"
+    ═══════════════════════════════════════════ */
+    function alunoPassKey(nome, serie) { return (nome + '_' + serie).toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_]/g,''); }
 
-    function addBook(book) {
-      const books = getBooks();
-      book.id = 'b' + Date.now();
-      book.createdAt = new Date().toISOString();
-      books.push(book);
-      saveBooks(books);
-      addAct(`📖 Livro "${book.title}" adicionado ao acervo`, 'new');
+    async function getAlunoPass(nome, serie) {
+      try {
+        const snap = await getDoc(doc(db, 'alunos', alunoPassKey(nome, serie)));
+        return snap.exists() ? snap.data().senha : null;
+      } catch { return null; }
+    }
+    async function setAlunoPass(nome, serie, senha) {
+      await setDoc(doc(db, 'alunos', alunoPassKey(nome, serie)), { nome, serie, senha, criadoEm: new Date().toISOString() });
+    }
+    async function alunoTemSenha(nome, serie) { return (await getAlunoPass(nome, serie)) !== null; }
+
+    async function getAllAlunos() {
+      const snap = await getDocs(collection(db, 'alunos'));
+      return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    }
+    async function deleteAlunoPass(alunoDocId) {
+      await deleteDoc(doc(db, 'alunos', alunoDocId));
+    }
+
+    /* ═══════════════════════════════════════════
+       SENHAS DE ESCOLA — doc raiz da escola
+    ═══════════════════════════════════════════ */
+    async function getPass(escola) {
+      try {
+        const snap = await getDoc(doc(db, 'escolas', escola.trim().toLowerCase().replace(/\s+/g,'_')));
+        return snap.exists() ? (snap.data().senha || null) : null;
+      } catch { return null; }
+    }
+    async function setPass(escola, senha) {
+      const ref = doc(db, 'escolas', escola.trim().toLowerCase().replace(/\s+/g,'_'));
+      const snap = await getDoc(ref);
+      if (snap.exists()) {
+        await updateDoc(ref, { senha });
+      } else {
+        await setDoc(ref, { nome: escola, senha, criadoEm: new Date().toISOString() });
+      }
+    }
+    async function escolaTemSenha(escola) { return (await getPass(escola)) !== null; }
+
+    /* ═══════════════════════════════════════════
+       LIVROS
+    ═══════════════════════════════════════════ */
+    async function loadBooks() {
+      const snap = await getDocs(col('livros'));
+      CACHE.books = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      return CACHE.books;
+    }
+    function getBooks() { return CACHE.books || []; }
+    function getBookById(id) { return getBooks().find(b => b.id === id) || null; }
+
+    async function addBook(book) {
+      book.criadoEm = new Date().toISOString();
+      const ref = await addDoc(col('livros'), book);
+      book.id = ref.id;
+      CACHE.books = [...getBooks(), book];
+      await addAct(`📖 Livro "${book.title}" adicionado ao acervo`, 'new');
       return book;
     }
 
-    function deleteBook(id) {
-      saveBooks(getBooks().filter(b => b.id !== id));
+    async function deleteBook(id) {
+      await deleteDoc(docRef('livros', id));
+      CACHE.books = getBooks().filter(b => b.id !== id);
     }
 
     function getAvailCopies(bookId) {
@@ -2179,18 +2273,23 @@
       return Math.max(0, (book.quantity || 1) - out);
     }
 
-    /* ── Empréstimos ── */
-    function getLoans() { return DB.get(KEYS.LOANS) }
-    function saveLoans(l) { DB.set(KEYS.LOANS, l) }
+    /* ═══════════════════════════════════════════
+       EMPRÉSTIMOS
+    ═══════════════════════════════════════════ */
+    async function loadLoans() {
+      const snap = await getDocs(col('emprestimos'));
+      CACHE.loans = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      return CACHE.loans;
+    }
+    function getLoans() { return CACHE.loans || []; }
 
-    function addLoan(loan) {
-      const loans = getLoans();
-      loan.id = 'l' + Date.now();
+    async function addLoan(loan) {
       loan.status = 'ativo';
-      loan.createdAt = new Date().toISOString();
-      loans.push(loan);
-      saveLoans(loans);
-      addAct(`📤 ${loan.alunoNome} agendou "${loan.bookTitle}"`, 'new');
+      loan.criadoEm = new Date().toISOString();
+      const ref = await addDoc(col('emprestimos'), loan);
+      loan.id = ref.id;
+      CACHE.loans = [...getLoans(), loan];
+      await addAct(`📤 ${loan.alunoNome} agendou "${loan.bookTitle}"`, 'new');
       return loan;
     }
 
@@ -2198,54 +2297,80 @@
       return getLoans().filter(l => l.alunoNome === nome && l.alunoSerie === serie);
     }
 
-    function markReturned(id) {
+    async function markReturned(id) {
       const loans = getLoans();
       const i = loans.findIndex(l => l.id === id);
       if (i < 0) return;
       loans[i].status = 'devolvido';
       loans[i].returnedAt = new Date().toISOString();
-      addAct(`✅ "${loans[i].bookTitle}" devolvido por ${loans[i].alunoNome}`, 'returned');
-      saveLoans(loans);
+      await updateDoc(docRef('emprestimos', id), { status: 'devolvido', returnedAt: loans[i].returnedAt });
+      await addAct(`✅ "${loans[i].bookTitle}" devolvido por ${loans[i].alunoNome}`, 'returned');
+      CACHE.loans = loans;
     }
 
-    function updateLoanDev(id, novaData) {
+    async function updateLoanDev(id, novaData) {
       const loans = getLoans();
       const i = loans.findIndex(l => l.id === id);
       if (i < 0) return;
       loans[i].dateDevolucao = novaData;
-      saveLoans(loans);
+      await updateDoc(docRef('emprestimos', id), { dateDevolucao: novaData });
+      CACHE.loans = loans;
     }
 
-    function refreshStatuses() {
+    async function refreshStatuses() {
       const loans = getLoans();
       const today = new Date(); today.setHours(0, 0, 0, 0);
-      let changed = false;
+      const updates = [];
       loans.forEach(l => {
         if (l.status === 'devolvido') return;
         const dev = new Date(l.dateDevolucao); dev.setHours(0, 0, 0, 0);
         const novo = dev < today ? 'atrasado' : 'ativo';
         if (l.status !== novo) {
-          l.status = novo; changed = true;
-          if (novo === 'atrasado') addAct(`⏰ Atraso: ${l.alunoNome} — "${l.bookTitle}"`, 'late');
+          l.status = novo;
+          updates.push(updateDoc(docRef('emprestimos', l.id), { status: novo }));
+          if (novo === 'atrasado') updates.push(addAct(`⏰ Atraso: ${l.alunoNome} — "${l.bookTitle}"`, 'late'));
         }
       });
-      if (changed) saveLoans(loans);
+      await Promise.all(updates);
+      CACHE.loans = loans;
     }
 
-    function getLateLoans() { refreshStatuses(); return getLoans().filter(l => l.status === 'atrasado') }
+    function getLateLoans() { return getLoans().filter(l => l.status === 'atrasado'); }
 
-    /* ── Configurações ── */
-    function getPrazo() { return DB.getRaw(KEYS.PRAZO, 14) }
-    function setPrazo(d) { localStorage.setItem(KEYS.PRAZO, JSON.stringify(Number(d))) }
-    function getPass() { return localStorage.getItem(KEYS.PASS) || 'escola123' }
-    function setPass(p) { localStorage.setItem(KEYS.PASS, p) }
+    /* ═══════════════════════════════════════════
+       CONFIGURAÇÕES (prazo por escola)
+    ═══════════════════════════════════════════ */
+    async function getPrazo() {
+      if (CACHE.prazo !== null) return CACHE.prazo;
+      try {
+        const snap = await getDoc(escolaDoc());
+        CACHE.prazo = snap.exists() ? (snap.data().prazo || 14) : 14;
+      } catch { CACHE.prazo = 14; }
+      return CACHE.prazo;
+    }
+    async function setPrazo(d) {
+      CACHE.prazo = d;
+      const ref = escolaDoc();
+      const snap = await getDoc(ref);
+      if (snap.exists()) { await updateDoc(ref, { prazo: d }); }
+      else { await setDoc(ref, { prazo: d }); }
+    }
 
-    /* ── Atividade ── */
-    function getAct() { return DB.get(KEYS.ACT) }
-    function addAct(msg, type) {
-      const list = getAct();
-      list.unshift({ msg, type, at: new Date().toISOString() });
-      DB.set(KEYS.ACT, list.slice(0, 30));
+    /* ═══════════════════════════════════════════
+       ATIVIDADE
+    ═══════════════════════════════════════════ */
+    async function loadAct() {
+      const snap = await getDocs(col('atividade'));
+      CACHE.act = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+        .sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 30);
+      return CACHE.act;
+    }
+    function getAct() { return CACHE.act || []; }
+    async function addAct(msg, type) {
+      const item = { msg, type, at: new Date().toISOString() };
+      const ref = await addDoc(col('atividade'), item);
+      item.id = ref.id;
+      CACHE.act = [item, ...getAct()].slice(0, 30);
     }
 
     /* ── Datas ── */
@@ -2290,7 +2415,7 @@
       document.getElementById('btnEscola').classList.toggle('active', !isAluno);
     }
 
-    function loginAluno() {
+    async function loginAluno() {
       const nome = document.getElementById('alunoNome').value.trim();
       const serie = document.getElementById('alunoSerie').value;
       const senha = document.getElementById('alunoSenha').value;
@@ -2298,38 +2423,46 @@
       if (!nome) { toast('Digite seu nome', 'err'); return }
       if (!serie) { toast('Selecione sua série', 'err'); return }
 
-      const temSenha = alunoTemSenha(nome, serie);
-
-      if (temSenha) {
-        if (!senha) { toast('Digite sua senha', 'err'); return }
-        if (senha !== getAlunoPass(nome, serie)) {
-          toast('Senha incorreta!', 'err');
-          const f = document.getElementById('formAluno');
-          f.style.animation = 'none'; f.offsetHeight; f.style.animation = 'shake .4s ease';
-          return;
+      showLoading('Verificando acesso...');
+      try {
+        const temSenha = await alunoTemSenha(nome, serie);
+        if (temSenha) {
+          if (!senha) { hideLoading(); toast('Digite sua senha', 'err'); return }
+          const senhaCorreta = await getAlunoPass(nome, serie);
+          if (senha !== senhaCorreta) {
+            hideLoading();
+            toast('Senha incorreta!', 'err');
+            const f = document.getElementById('formAluno');
+            f.style.animation = 'none'; f.offsetHeight; f.style.animation = 'shake .4s ease';
+            return;
+          }
+        } else {
+          if (!senha || senha.length < 4) { hideLoading(); toast('Crie uma senha com no mínimo 4 caracteres', 'err'); return }
+          if (senha !== senhaConf) { hideLoading(); toast('As senhas não coincidem', 'err'); return }
+          await setAlunoPass(nome, serie, senha);
+          toast('🔑 Senha criada com sucesso!', 'ok');
         }
-      } else {
-        if (!senha || senha.length < 4) { toast('Crie uma senha com no mínimo 4 caracteres', 'err'); return }
-        if (senha !== senhaConf) { toast('As senhas não coincidem', 'err'); return }
-        setAlunoPass(nome, serie, senha);
-        toast('🔑 Senha criada com sucesso!', 'ok');
+        SESSION = { type: 'aluno', nome, serie };
+        await initAluno();
+        showScreen('aluno');
+      } catch(e) {
+        hideLoading();
+        toast('Erro de conexão. Tente novamente.', 'err');
+        console.error(e);
       }
-
-      SESSION = { type: 'aluno', nome, serie };
-      initAluno();
-      showScreen('aluno');
     }
 
-    function onAlunoChange() {
+    async function onAlunoChange() {
       const nome = document.getElementById('alunoNome').value.trim();
       const serie = document.getElementById('alunoSerie').value;
       const confRow = document.getElementById('alunoSenhaConfRow');
       const infoBox = document.getElementById('alunoSenhaInfo');
       const senhaLabel = document.getElementById('alunoSenhaLabel');
       if (nome && serie) {
-        const temSenha = alunoTemSenha(nome, serie);
-        confRow.classList.toggle('hidden', temSenha);
+        infoBox.innerHTML = '⏳ Verificando...';
         infoBox.classList.remove('hidden');
+        const temSenha = await alunoTemSenha(nome, serie);
+        confRow.classList.toggle('hidden', temSenha);
         infoBox.innerHTML = temSenha
           ? '🔐 Bem-vindo de volta! Digite sua senha para entrar.'
           : '✨ Primeiro acesso! Crie uma senha pessoal para sua conta.';
@@ -2340,20 +2473,61 @@
       }
     }
 
-    function loginEscola() {
+    async function loginEscola() {
+      const escola = document.getElementById('escolaNome').value.trim();
       const coord = document.getElementById('escolaCoordenador').value.trim();
       const senha = document.getElementById('escolaSenha').value;
+      const senhaConf = document.getElementById('escolaSenhaConf').value;
+      if (!escola) { toast('Digite o nome da escola', 'err'); return }
       if (!coord) { toast('Digite o nome do coordenador', 'err'); return }
-      if (!senha) { toast('Digite a senha', 'err'); return }
-      if (senha !== getPass()) {
-        toast('Senha incorreta!', 'err');
-        const f = document.getElementById('formEscola');
-        f.style.animation = 'none'; f.offsetHeight; f.style.animation = 'shake .4s ease';
-        return;
+
+      showLoading('Verificando acesso da escola...');
+      try {
+        const temSenha = await escolaTemSenha(escola);
+        if (temSenha) {
+          if (!senha) { hideLoading(); toast('Digite a senha', 'err'); return }
+          const senhaCorreta = await getPass(escola);
+          if (senha !== senhaCorreta) {
+            hideLoading();
+            toast('Senha incorreta!', 'err');
+            const f = document.getElementById('formEscola');
+            f.style.animation = 'none'; f.offsetHeight; f.style.animation = 'shake .4s ease';
+            return;
+          }
+        } else {
+          if (!senha || senha.length < 4) { hideLoading(); toast('Crie uma senha com no mínimo 4 caracteres', 'err'); return }
+          if (senha !== senhaConf) { hideLoading(); toast('As senhas não coincidem', 'err'); return }
+          await setPass(escola, senha);
+          toast('🏫 Escola cadastrada com sucesso!', 'ok');
+        }
+        SESSION = { type: 'escola', coordenador: coord, escola };
+        await initEscola();
+        showScreen('escola');
+      } catch(e) {
+        hideLoading();
+        toast('Erro de conexão. Tente novamente.', 'err');
+        console.error(e);
       }
-      SESSION = { type: 'escola', coordenador: coord };
-      initEscola();
-      showScreen('escola');
+    }
+
+    async function onEscolaChange() {
+      const escola = document.getElementById('escolaNome').value.trim();
+      const confRow = document.getElementById('escolaSenhaConfRow');
+      const infoBox = document.getElementById('escolaSenhaInfo');
+      const senhaLabel = document.getElementById('escolaSenhaLabel');
+      if (escola) {
+        infoBox.innerHTML = '⏳ Verificando...';
+        infoBox.classList.remove('hidden');
+        const temSenha = await escolaTemSenha(escola);
+        confRow.classList.toggle('hidden', temSenha);
+        infoBox.innerHTML = temSenha
+          ? '🔐 Escola encontrada! Digite a senha para entrar.'
+          : '✨ Primeiro acesso desta escola! Crie uma senha exclusiva.';
+        senhaLabel.textContent = temSenha ? 'Senha de Acesso' : 'Criar Senha (mín. 4 caracteres)';
+      } else {
+        confRow.classList.add('hidden');
+        infoBox.classList.add('hidden');
+      }
     }
 
     function togglePass() {
@@ -2375,8 +2549,12 @@
       document.getElementById('alunoSenhaConf').value = '';
       document.getElementById('alunoSenhaInfo').classList.add('hidden');
       document.getElementById('alunoSenhaConfRow').classList.add('hidden');
+      document.getElementById('escolaNome').value = '';
       document.getElementById('escolaCoordenador').value = '';
       document.getElementById('escolaSenha').value = '';
+      document.getElementById('escolaSenhaConf').value = '';
+      document.getElementById('escolaSenhaInfo').classList.add('hidden');
+      document.getElementById('escolaSenhaConfRow').classList.add('hidden');
       showScreen('login');
     }
 
@@ -2385,8 +2563,13 @@
     ═══════════════════════════════════════════ */
     let selBookId = null;
 
-    function initAluno() {
-      refreshStatuses();
+    async function initAluno() {
+      showLoading('Carregando biblioteca...');
+      await loadBooks();
+      await loadLoans();
+      await refreshStatuses();
+      await loadLoans(); // recarrega após refresh
+      hideLoading();
       document.getElementById('hdrNome').textContent = SESSION.nome;
       document.getElementById('hdrSerie').textContent = SESSION.serie;
       document.getElementById('heroNome').textContent = SESSION.nome;
@@ -2444,7 +2627,7 @@
     function clearSearch() { document.getElementById('searchInput').value = ''; renderBooks() }
 
     /* Agendamento */
-    function openAgend(id) {
+    async function openAgend(id) {
       const book = getBookById(id);
       if (!book) return;
       if (getAvailCopies(id) === 0) { toast('📭 Livro indisponível no momento', 'err'); return }
@@ -2458,7 +2641,7 @@
       document.getElementById('agendAuthor').textContent = book.author;
 
       const hoje = todayISO();
-      const prazo = getPrazo();
+      const prazo = await getPrazo();
       const maxD = addDays(hoje, prazo);
       const ret = document.getElementById('dateRet');
       const dev = document.getElementById('dateDev');
@@ -2479,21 +2662,25 @@
 
     document.getElementById('modalAgend').addEventListener('click', e => { if (e.target === e.currentTarget) closeAgend() });
 
-    function confirmarAgend() {
+    async function confirmarAgend() {
       const ret = document.getElementById('dateRet').value;
       const dev = document.getElementById('dateDev').value;
       if (!ret || !dev) { toast('Preencha as datas', 'err'); return }
       if (dev < ret) { toast('Devolução não pode ser antes da retirada', 'err'); return }
       const book = getBookById(selBookId);
-      addLoan({
-        bookId: selBookId, bookTitle: book.title, bookAuthor: book.author,
-        bookCover: book.coverBase64 || null, alunoNome: SESSION.nome, alunoSerie: SESSION.serie,
-        dateRetirada: ret, dateDevolucao: dev
-      });
-      closeAgend();
-      toast('✅ Agendamento confirmado!', 'ok');
-      renderBooks();
-      updateAlunoStats();
+      showLoading('Agendando empréstimo...');
+      try {
+        await addLoan({
+          bookId: selBookId, bookTitle: book.title, bookAuthor: book.author,
+          bookCover: book.coverBase64 || null, alunoNome: SESSION.nome, alunoSerie: SESSION.serie,
+          dateRetirada: ret, dateDevolucao: dev
+        });
+        closeAgend();
+        toast('✅ Agendamento confirmado!', 'ok');
+        renderBooks();
+        updateAlunoStats();
+      } catch(e) { toast('Erro ao agendar. Tente novamente.', 'err'); console.error(e); }
+      hideLoading();
     }
 
     /* Meus empréstimos */
@@ -2532,10 +2719,19 @@
     let loanFilter = 'todos';
     let editLoanId = null;
 
-    function initEscola() {
-      refreshStatuses();
+    async function initEscola() {
+      showLoading('Carregando painel...');
+      await loadBooks();
+      await loadLoans();
+      await loadAct();
+      await refreshStatuses();
+      await loadLoans();
+      const prazo = await getPrazo();
+      hideLoading();
       document.getElementById('sbNome').textContent = SESSION.coordenador;
-      document.getElementById('cfgPrazo').value = getPrazo();
+      const sbEscola = document.getElementById('sbEscola');
+      if (sbEscola) sbEscola.textContent = SESSION.escola || 'Escola';
+      document.getElementById('cfgPrazo').value = prazo;
       showPanel('dashboard', document.getElementById('nav-dashboard'));
     }
 
@@ -2551,37 +2747,30 @@
         emprestimos: () => renderLoansTable(loanFilter),
         alertas: renderAlerts,
         alunos: renderAlunosTable,
-        config: () => { document.getElementById('cfgPrazo').value = getPrazo() },
+        config: async () => { document.getElementById('cfgPrazo').value = await getPrazo() },
       };
       if (loaders[name]) loaders[name]();
     }
 
     /* Alunos */
-    function renderAlunosTable() {
+    async function renderAlunosTable() {
       const tbody = document.getElementById('alunosTbody');
       const empty = document.getElementById('emptyAlunos');
-      const passes = getAlunoPasses();
       const search = (document.getElementById('alunoSearch')?.value || '').toLowerCase().trim();
       const serieFilter = document.getElementById('alunoSerieFilter')?.value || '';
       const loans = getLoans();
 
-      let alunos = Object.keys(passes).map(key => {
-        const [nome, serie] = key.split('|');
-        // Reconstruct proper capitalization from loans if possible
-        const matchLoan = loans.find(l => l.alunoNome.toLowerCase() === nome && l.alunoSerie.toLowerCase() === serie);
-        return {
-          nome: matchLoan ? matchLoan.alunoNome : nome.replace(/\b\w/g, c => c.toUpperCase()),
-          serie: matchLoan ? matchLoan.alunoSerie : serie,
-          key
-        };
-      });
+      let alunos = (await getAllAlunos()).map(a => ({
+        id: a.id,
+        nome: a.nome || a.id,
+        serie: a.serie || '',
+      }));
 
       if (search) alunos = alunos.filter(a => a.nome.toLowerCase().includes(search) || a.serie.toLowerCase().includes(search));
       if (serieFilter) alunos = alunos.filter(a => a.serie === serieFilter);
 
       tbody.innerHTML = '';
       empty.classList.toggle('hidden', alunos.length > 0);
-
       alunos.sort((a, b) => a.nome.localeCompare(b.nome));
 
       alunos.forEach(aluno => {
@@ -2603,20 +2792,22 @@
           <td>
             <div class="tbl-acts">
               <button class="btn btn-cancel btn-sm" onclick="verHistoricoAluno('${aluno.nome.replace(/'/g,"\'")}','${aluno.serie.replace(/'/g,"\'")}')">📋 Histórico</button>
-              <button class="btn btn-danger btn-sm" onclick="resetSenhaAluno('${aluno.key}','${aluno.nome.replace(/'/g,"\'")}')">🔑 Reset Senha</button>
+              <button class="btn btn-danger btn-sm" onclick="resetSenhaAluno('${aluno.id}','${aluno.nome.replace(/'/g,"\'")}')">🔑 Reset Senha</button>
             </div>
           </td>`;
         tbody.appendChild(tr);
       });
     }
 
-    function resetSenhaAluno(key, nome) {
+    async function resetSenhaAluno(docId, nome) {
       if (!confirm('Remover a senha de ' + nome + '? O aluno precisará criar uma nova senha no próximo acesso.')) return;
-      const passes = getAlunoPasses();
-      delete passes[key];
-      saveAlunoPasses(passes);
-      renderAlunosTable();
-      toast('🔑 Senha removida. Aluno deverá criar uma nova.', 'ok');
+      showLoading('Removendo senha...');
+      try {
+        await deleteAlunoPass(docId);
+        await renderAlunosTable();
+        toast('🔑 Senha removida. Aluno deverá criar uma nova.', 'ok');
+      } catch(e) { toast('Erro ao remover senha', 'err'); }
+      hideLoading();
     }
 
     function verHistoricoAluno(nome, serie) {
@@ -2640,10 +2831,10 @@
     function closeHistAluno() { document.getElementById('modalHistAluno').classList.add('hidden'); }
 
     /* Dashboard */
-    function renderDashboard() {
+    async function renderDashboard() {
       const loans = getLoans(), books = getBooks();
       document.getElementById('kpiL').textContent = books.length;
-      const alunosCount = Object.keys(getAlunoPasses()).length;
+      const alunosCount = (await getAllAlunos()).length;
       const kpiAlEl = document.getElementById('kpiAl');
       if (kpiAlEl) kpiAlEl.textContent = alunosCount;
       document.getElementById('kpiA').textContent = loans.filter(l => l.status === 'ativo').length;
@@ -2669,9 +2860,10 @@
     }
 
     /* Alertas */
-    function renderAlerts() {
+    async function renderAlerts() {
       const list = document.getElementById('alertsList');
       const empty = document.getElementById('emptyAl');
+      await refreshStatuses();
       const late = getLateLoans();
       list.innerHTML = '';
       empty.classList.toggle('hidden', late.length > 0);
@@ -2719,8 +2911,13 @@
 
     function filterEBooks() { renderEBooks(document.getElementById('eSearch').value) }
 
-    function confirmDel(id, title) {
-      if (confirm(`Remover "${title}" do acervo?`)) { deleteBook(id); renderEBooks(); renderDashboard(); toast('Livro removido') }
+    async function confirmDel(id, title) {
+      if (confirm(`Remover "${title}" do acervo?`)) {
+        showLoading('Removendo...');
+        try { await deleteBook(id); renderEBooks(); renderDashboard(); toast('Livro removido'); }
+        catch(e) { toast('Erro ao remover', 'err'); }
+        hideLoading();
+      }
     }
 
     /* Add book modal */
@@ -2751,7 +2948,7 @@
       reader.readAsDataURL(file);
     }
 
-    function saveBook() {
+    async function saveBook() {
       const title = document.getElementById('newTitle').value.trim();
       const author = document.getElementById('newAuthor').value.trim();
       const qty = parseInt(document.getElementById('newQtd').value) || 1;
@@ -2759,11 +2956,15 @@
       if (!title) { toast('Digite o título', 'err'); return }
       if (!author) { toast('Digite o autor', 'err'); return }
       const cover = (!imgEl.classList.contains('hidden') && imgEl.src) ? imgEl.src : null;
-      addBook({ title, author, quantity: qty, coverBase64: cover });
-      closeAddBook();
-      renderEBooks();
-      renderDashboard();
-      toast('📚 Livro adicionado!', 'ok');
+      showLoading('Salvando livro...');
+      try {
+        await addBook({ title, author, quantity: qty, coverBase64: cover });
+        closeAddBook();
+        renderEBooks();
+        renderDashboard();
+        toast('📚 Livro adicionado!', 'ok');
+      } catch(e) { toast('Erro ao salvar livro', 'err'); console.error(e); }
+      hideLoading();
     }
 
     /* Tabela de empréstimos */
@@ -2806,13 +3007,17 @@
       });
     }
 
-    function marcarDev(id) {
+    async function marcarDev(id) {
       if (confirm('Confirmar devolução deste livro?')) {
-        markReturned(id);
-        renderLoansTable(loanFilter);
-        renderDashboard();
-        checkNotif();
-        toast('✅ Livro devolvido!', 'ok');
+        showLoading('Registrando devolução...');
+        try {
+          await markReturned(id);
+          renderLoansTable(loanFilter);
+          renderDashboard();
+          checkNotif();
+          toast('✅ Livro devolvido!', 'ok');
+        } catch(e) { toast('Erro ao registrar devolução', 'err'); }
+        hideLoading();
       }
     }
 
@@ -2828,40 +3033,3202 @@
     function closePrazoModal() { document.getElementById('modalPrazo').classList.add('hidden'); editLoanId = null }
     document.getElementById('modalPrazo').addEventListener('click', e => { if (e.target === e.currentTarget) closePrazoModal() });
 
-    function salvarPrazo() {
+    async function salvarPrazo() {
       const d = document.getElementById('novaDev').value;
       if (!d) { toast('Selecione uma data', 'err'); return }
-      updateLoanDev(editLoanId, d);
-      refreshStatuses();
-      closePrazoModal();
-      renderLoansTable(loanFilter);
-      checkNotif();
-      toast('📅 Prazo atualizado!', 'ok');
+      showLoading('Salvando...');
+      try {
+        await updateLoanDev(editLoanId, d);
+        await refreshStatuses();
+        closePrazoModal();
+        renderLoansTable(loanFilter);
+        checkNotif();
+        toast('📅 Prazo atualizado!', 'ok');
+      } catch(e) { toast('Erro ao salvar prazo', 'err'); }
+      hideLoading();
     }
 
     /* Configurações */
-    function savePrazo() {
+    async function savePrazo() {
       const d = parseInt(document.getElementById('cfgPrazo').value);
       if (!d || d < 1) { toast('Valor inválido', 'err'); return }
-      setPrazo(d);
-      toast(`✅ Prazo salvo: ${d} dias`, 'ok');
+      try { await setPrazo(d); toast(`✅ Prazo salvo: ${d} dias`, 'ok'); }
+      catch(e) { toast('Erro ao salvar prazo', 'err'); }
     }
 
-    function alterarSenha() {
+    async function alterarSenha() {
       const atual = document.getElementById('senhaAtual').value;
       const nova = document.getElementById('senhaNova').value;
       const conf = document.getElementById('senhaConf').value;
-      if (atual !== getPass()) { toast('Senha atual incorreta!', 'err'); return }
+      const escola = SESSION?.escola || '';
+      const senhaAtual = await getPass(escola);
+      if (atual !== senhaAtual) { toast('Senha atual incorreta!', 'err'); return }
       if (!nova || nova.length < 4) { toast('Nova senha: mín. 4 caracteres', 'err'); return }
       if (nova !== conf) { toast('As senhas não coincidem', 'err'); return }
-      setPass(nova);
-      ['senhaAtual', 'senhaNova', 'senhaConf'].forEach(id => document.getElementById(id).value = '');
-      toast('🔑 Senha alterada!', 'ok');
+      try {
+        await setPass(escola, nova);
+        ['senhaAtual', 'senhaNova', 'senhaConf'].forEach(id => document.getElementById(id).value = '');
+        toast('🔑 Senha alterada!', 'ok');
+      } catch(e) { toast('Erro ao alterar senha', 'err'); }
     }
 
     /* ═══════════════════════════════════════════
        INICIALIZAÇÃO
     ═══════════════════════════════════════════ */
+    // Expõe funções para onclick handlers no HTML
+    window.switchType = switchType;
+    window.loginAluno = loginAluno;
+    window.loginEscola = loginEscola;
+    window.onAlunoChange = onAlunoChange;
+    window.onEscolaChange = onEscolaChange;
+    window.togglePass = togglePass;
+    window.toggleAlunoPass = toggleAlunoPass;
+    window.logout = logout;
+    window.showTab = showTab;
+    window.filterBooks = filterBooks;
+    window.clearSearch = clearSearch;
+    window.openAgend = openAgend;
+    window.closeAgend = closeAgend;
+    window.confirmarAgend = confirmarAgend;
+    window.showPanel = showPanel;
+    window.openAddBook = openAddBook;
+    window.closeAddBook = closeAddBook;
+    window.previewImg = previewImg;
+    window.saveBook = saveBook;
+    window.confirmDel = confirmDel;
+    window.filterEBooks = filterEBooks;
+    window.filterLoans = filterLoans;
+    window.marcarDev = marcarDev;
+    window.openPrazoM = openPrazoM;
+    window.closePrazoModal = closePrazoModal;
+    window.salvarPrazo = salvarPrazo;
+    window.savePrazo = savePrazo;
+    window.alterarSenha = alterarSenha;
+    window.renderAlunosTable = renderAlunosTable;
+    window.resetSenhaAluno = resetSenhaAluno;
+    window.verHistoricoAluno = verHistoricoAluno;
+    window.closeHistAluno = closeHistAluno;
+    window.exportAlunosCSV = exportAlunosCSV;
+    window.exportAlunosPDF = exportAlunosPDF;
+
+    // Começa sempre na tela de login
+    showScreen('login');
+  </script>
+</body>
+
+</html><!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BiblioEscola</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link
+    href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=DM+Sans:wght@300;400;500&display=swap"
+    rel="stylesheet">
+  <style>
+    /* ═══════════════════════════════════════════
+   RESET & VARIÁVEIS GLOBAIS
+═══════════════════════════════════════════ */
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0
+    }
+
+    :root {
+      --cream: #043d09;
+      --ink: #3aa311;
+      --amber: #040a01cb;
+      --amber-lt: #024b05;
+      --amber-dk: #1aac0d;
+      --rust: #2bc032;
+      --sage: #058847;
+      --mist: #00a100;
+      --border: #09cf23;
+      --sh-sm: 0 2px 8px rgba(133, 77, 9, 0.08);
+      --sh-md: 0 6px 24px rgba(26, 18, 8, .13);
+      --sh-lg: 0 16px 48px rgba(26, 18, 8, .18);
+      --r: 14px;
+      --r-sm: 8px;
+      --r-lg: 22px;
+      --tr: .22s cubic-bezier(.4, 0, .2, 1)
+    }
+
+    html {
+      scroll-behavior: smooth
+    }
+
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: var(--cream);
+      color: var(--ink);
+      min-height: 100vh;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased
+    }
+
+    h1,
+    h2,
+    h3 {
+      font-family: 'Playfair Display', serif;
+      line-height: 1.2
+    }
+
+    .hidden {
+      display: none !important
+    }
+
+    ::-webkit-scrollbar {
+      width: 6px
+    }
+
+    ::-webkit-scrollbar-track {
+      background: var(--mist)
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 99px
+    }
+
+    /* ── Botões ── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: .5rem;
+      padding: .8rem 1.8rem;
+      border: none;
+      border-radius: var(--r-sm);
+      font-family: 'DM Sans', sans-serif;
+      font-size: .95rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: var(--tr);
+      letter-spacing: .02em
+    }
+
+    .btn-primary {
+      background: var(--amber);
+      color: #fff
+    }
+
+    .btn-primary:hover {
+      background: var(--amber-dk);
+      transform: translateY(-1px);
+      box-shadow: var(--sh-sm)
+    }
+
+    .btn-escola {
+      background: var(--amber-dk);
+      color: #fff
+    }
+
+    .btn-escola:hover {
+      background: #035700;
+      transform: translateY(-1px)
+    }
+
+    .btn-cancel {
+      background: transparent;
+      color: var(--ink);
+      border: 1.5px solid var(--border)
+    }
+
+    .btn-cancel:hover {
+      background: var(--mist)
+    }
+
+    .btn-danger {
+      background: #FEF2F2;
+      color: var(--rust);
+      border: 1.5px solid #FECACA
+    }
+
+    .btn-danger:hover {
+      background: var(--rust);
+      color: #fff
+    }
+
+    .btn-success {
+      background: #E8F5EE;
+      color: var(--sage);
+      border: 1.5px solid #BBE0CC
+    }
+
+    .btn-success:hover {
+      background: var(--sage);
+      color: #fff
+    }
+
+    .btn-sm {
+      padding: .35rem .75rem;
+      font-size: .8rem
+    }
+
+    .btn-full {
+      width: 100%;
+      padding: .9rem;
+      font-size: 1rem;
+      margin-top: .4rem
+    }
+
+    /* ── Campos ── */
+    .field-group {
+      display: flex;
+      flex-direction: column;
+      gap: .4rem;
+      margin-bottom: 1.2rem
+    }
+
+    .field-group label {
+      font-size: .78rem;
+      font-weight: 500;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      color: #6B5840
+    }
+
+    .field-group input,
+    .field-group select,
+    .field-group textarea {
+      padding: .75rem 1rem;
+      border: 1.5px solid var(--border);
+      border-radius: var(--r-sm);
+      font-family: 'DM Sans', sans-serif;
+      font-size: .95rem;
+      background: #fff;
+      color: var(--ink);
+      transition: var(--tr);
+      outline: none
+    }
+
+    .field-group input:focus,
+    .field-group select:focus {
+      border-color: var(--amber);
+      box-shadow: 0 0 0 3px rgba(201, 123, 46, .15)
+    }
+
+    .field-group select {
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23C97B2E' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 1rem center;
+      padding-right: 2.5rem
+    }
+
+    /* ── Modal ── */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(26, 18, 8, .55);
+      backdrop-filter: blur(4px);
+      z-index: 200;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+      animation: fadeIn .2s ease
+    }
+
+    .modal-box {
+      background: #fff;
+      border-radius: var(--r-lg);
+      padding: 2.4rem;
+      width: 100%;
+      max-width: 480px;
+      position: relative;
+      box-shadow: var(--sh-lg);
+      animation: slideUp .28s cubic-bezier(.4, 0, .2, 1)
+    }
+
+    .modal-box.lg {
+      max-width: 580px
+    }
+
+    .modal-close {
+      position: absolute;
+      top: 1.2rem;
+      right: 1.2rem;
+      background: var(--mist);
+      border: none;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      cursor: pointer;
+      font-size: 1rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: var(--tr)
+    }
+
+    .modal-close:hover {
+      background: var(--border)
+    }
+
+    .modal-title {
+      font-size: 1.5rem;
+      margin-bottom: .3rem
+    }
+
+    .modal-sub {
+      color: #6B5840;
+      font-size: .9rem;
+      margin-bottom: 1.4rem
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 1rem;
+      justify-content: flex-end;
+      margin-top: 1.6rem
+    }
+
+    .modal-fields {
+      margin-top: 1.4rem
+    }
+
+    /* ── Toast ── */
+    #toast {
+      position: fixed;
+      bottom: 2rem;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--ink);
+      color: #fff;
+      padding: .9rem 1.8rem;
+      border-radius: 50px;
+      font-size: .9rem;
+      font-weight: 500;
+      z-index: 999;
+      box-shadow: var(--sh-md);
+      animation: slideUpToast .25s ease;
+      white-space: nowrap
+    }
+
+    #toast.ok {
+      background: var(--sage)
+    }
+
+    #toast.err {
+      background: var(--rust)
+    }
+
+    /* ── Empty state ── */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: .6rem;
+      padding: 4rem 2rem;
+      text-align: center;
+      color: #9B8B74
+    }
+
+    .empty-state .es-icon {
+      font-size: 3rem
+    }
+
+    .empty-state p {
+      font-size: 1.1rem;
+      font-weight: 500;
+      color: #6B5840
+    }
+
+    .empty-state small {
+      font-size: .85rem
+    }
+
+    /* ── Animations ── */
+    @keyframes fadeIn {
+      from {
+        opacity: 0
+      }
+
+      to {
+        opacity: 1
+      }
+    }
+
+    @keyframes slideUp {
+      from {
+        opacity: 0;
+        transform: translateY(24px)
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0)
+      }
+    }
+
+    @keyframes slideUpToast {
+      from {
+        opacity: 0;
+        transform: translateX(-50%) translateY(16px)
+      }
+
+      to {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0)
+      }
+    }
+
+    @keyframes shake {
+
+      0%,
+      100% {
+        transform: translateX(0)
+      }
+
+      20% {
+        transform: translateX(-8px)
+      }
+
+      40% {
+        transform: translateX(8px)
+      }
+
+      60% {
+        transform: translateX(-5px)
+      }
+
+      80% {
+        transform: translateX(5px)
+      }
+    }
+
+    /* ═══════════════════════════════════════════
+   TELA DE LOGIN
+═══════════════════════════════════════════ */
+    #screen-login {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem 1rem;
+      gap: 1.6rem;
+      position: relative;
+      overflow: hidden
+    }
+
+    .bg-c1,
+    .bg-c2 {
+      position: fixed;
+      border-radius: 50%;
+      filter: blur(80px);
+      opacity: .55;
+      pointer-events: none;
+      z-index: 0
+    }
+
+    .bg-c1 {
+      width: 600px;
+      height: 600px;
+      background: radial-gradient(circle, #E8A94A55, transparent 70%);
+      top: -200px;
+      left: -100px;
+      animation: drift 12s ease-in-out infinite alternate
+    }
+
+    .bg-c2 {
+      width: 500px;
+      height: 500px;
+      background: radial-gradient(circle, #C97B2E33, transparent 70%);
+      bottom: -150px;
+      right: -100px;
+      animation: drift 16s ease-in-out infinite alternate-reverse
+    }
+
+    .bg-grid {
+      position: fixed;
+      inset: 0;
+      background-image: linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px);
+      background-size: 48px 48px;
+      opacity: .22;
+      pointer-events: none;
+      z-index: 0
+    }
+
+    @keyframes drift {
+      from {
+        transform: translate(0, 0)
+      }
+
+      to {
+        transform: translate(40px, 30px)
+      }
+    }
+
+    .login-brand {
+      text-align: center;
+      animation: slideUp .5s ease both;
+      position: relative;
+      z-index: 1
+    }
+
+    .login-brand .b-icon {
+      font-size: 3.5rem;
+      display: block;
+      filter: drop-shadow(0 4px 12px rgba(201, 123, 46, .4))
+    }
+
+    .login-brand h1 {
+      font-size: 2.4rem;
+      font-weight: 900;
+      letter-spacing: -.02em
+    }
+
+    .login-brand p {
+      color: #8C7A62;
+      font-size: .9rem;
+      margin-top: .2rem
+    }
+
+    .type-toggle {
+      display: flex;
+      gap: .5rem;
+      background: var(--mist);
+      border: 1.5px solid var(--border);
+      border-radius: 50px;
+      padding: .4rem;
+      animation: slideUp .5s .1s ease both;
+      position: relative;
+      z-index: 1
+    }
+
+    .tg-btn {
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      padding: .6rem 1.4rem;
+      border: none;
+      background: transparent;
+      border-radius: 50px;
+      font-family: 'DM Sans', sans-serif;
+      font-size: .9rem;
+      font-weight: 500;
+      color: #8C7A62;
+      cursor: pointer;
+      transition: var(--tr)
+    }
+
+    .tg-btn.active {
+      background: var(--amber);
+      color: #fff;
+      box-shadow: 0 2px 12px rgba(201, 123, 46, .35)
+    }
+
+    .login-card {
+      background: #fff;
+      border: 1.5px solid var(--border);
+      border-radius: var(--r-lg);
+      padding: 2.2rem 2.4rem;
+      width: 100%;
+      max-width: 420px;
+      box-shadow: var(--sh-md);
+      animation: slideUp .5s .15s ease both;
+      position: relative;
+      z-index: 1
+    }
+
+    .login-card h2 {
+      font-size: 1.4rem;
+      margin-bottom: 1.6rem
+    }
+
+    .pass-wrap {
+      display: flex;
+      position: relative
+    }
+
+    .pass-wrap input {
+      flex: 1;
+      border-radius: var(--r-sm) 0 0 var(--r-sm) !important
+    }
+
+    .eye-btn {
+      padding: 0 1rem;
+      background: var(--mist);
+      border: 1.5px solid var(--border);
+      border-left: none;
+      border-radius: 0 var(--r-sm) var(--r-sm) 0;
+      cursor: pointer;
+      font-size: 1rem;
+      transition: var(--tr)
+    }
+
+    .eye-btn:hover {
+      background: var(--border)
+    }
+
+    .hint-box {
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      background: #FFF8ED;
+      border: 1px solid #F0D090;
+      border-radius: var(--r-sm);
+      padding: .7rem 1rem;
+      font-size: .85rem;
+      color: #8C5220;
+      margin-bottom: 1.2rem
+    }
+
+    .login-note {
+      text-align: center;
+      font-size: .78rem;
+      color: #9B8B74;
+      margin-top: .8rem
+    }
+
+    .login-footer {
+      font-size: .75rem;
+      color: #B0A090;
+      text-align: center;
+      animation: slideUp .5s .25s ease both;
+      position: relative;
+      z-index: 1
+    }
+
+    /* ═══════════════════════════════════════════
+   TELA DO ALUNO
+═══════════════════════════════════════════ */
+    #screen-aluno {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column
+    }
+
+    /* Top bar */
+    .top-bar {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: .9rem 2rem;
+      background: rgba(250, 246, 239, .92);
+      backdrop-filter: blur(16px);
+      border-bottom: 1.5px solid var(--border)
+    }
+
+    .logo-sm {
+      font-family: 'Playfair Display', serif;
+      font-weight: 700;
+      font-size: 1.1rem;
+      white-space: nowrap
+    }
+
+    .top-center {
+      flex: 1;
+      max-width: 560px;
+      margin: 0 auto
+    }
+
+    .search-bar {
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      background: #fff;
+      border: 1.5px solid var(--border);
+      border-radius: 50px;
+      padding: .55rem 1rem;
+      transition: var(--tr)
+    }
+
+    .search-bar:focus-within {
+      border-color: var(--amber);
+      box-shadow: 0 0 0 3px rgba(201, 123, 46, .12)
+    }
+
+    .search-icon {
+      font-size: .95rem;
+      opacity: .5
+    }
+
+    .search-bar input {
+      border: none;
+      outline: none;
+      flex: 1;
+      background: transparent;
+      font-family: 'DM Sans', sans-serif;
+      font-size: .95rem;
+      color: var(--ink)
+    }
+
+    .search-clear {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: #9B8B74;
+      font-size: .85rem;
+      opacity: .6;
+      transition: var(--tr)
+    }
+
+    .search-clear:hover {
+      opacity: 1
+    }
+
+    .top-right {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      white-space: nowrap
+    }
+
+    .user-pill {
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      padding: .4rem .9rem;
+      background: var(--mist);
+      border: 1.5px solid var(--border);
+      border-radius: 50px;
+      font-size: .85rem;
+      font-weight: 500
+    }
+
+    .pill-badge {
+      background: var(--amber);
+      color: #fff;
+      padding: .1rem .5rem;
+      border-radius: 50px;
+      font-size: .72rem
+    }
+
+    .logout-btn {
+      padding: .45rem 1rem;
+      border: 1.5px solid var(--border);
+      border-radius: 50px;
+      background: transparent;
+      font-family: 'DM Sans', sans-serif;
+      font-size: .85rem;
+      cursor: pointer;
+      transition: var(--tr)
+    }
+
+    .logout-btn:hover {
+      background: var(--rust);
+      color: #fff;
+      border-color: var(--rust)
+    }
+
+    /* Hero */
+    .hero {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 2.8rem 2.4rem 1.6rem;
+      gap: 2rem;
+      animation: slideUp .5s ease both;
+      flex-wrap: wrap
+    }
+
+    .hero-lbl {
+      font-size: .85rem;
+      color: #8C7A62;
+      margin-bottom: .2rem
+    }
+
+    .hero h1 {
+      font-size: 2.2rem;
+      font-weight: 900
+    }
+
+    .hero-serie {
+      color: var(--amber-dk);
+      font-size: .9rem;
+      margin-top: .2rem
+    }
+
+    .hero-stats {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap
+    }
+
+    .stat-card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background: #fff;
+      border: 1.5px solid var(--border);
+      border-radius: var(--r);
+      padding: 1rem 1.6rem;
+      min-width: 110px;
+      box-shadow: var(--sh-sm)
+    }
+
+    .stat-num {
+      font-family: 'Playfair Display', serif;
+      font-size: 2rem;
+      font-weight: 700;
+      color: var(--amber)
+    }
+
+    .stat-lbl {
+      font-size: .72rem;
+      color: #9B8B74;
+      text-align: center;
+      margin-top: .2rem
+    }
+
+    /* Tabs */
+    .tabs {
+      display: flex;
+      gap: .5rem;
+      padding: 0 2.4rem 1.2rem;
+      border-bottom: 1.5px solid var(--border)
+    }
+
+    .tab {
+      padding: .55rem 1.3rem;
+      border: 1.5px solid transparent;
+      border-radius: 50px;
+      background: transparent;
+      font-family: 'DM Sans', sans-serif;
+      font-size: .9rem;
+      font-weight: 500;
+      cursor: pointer;
+      color: #8C7A62;
+      transition: var(--tr)
+    }
+
+    .tab.active {
+      background: var(--amber);
+      color: #fff;
+      border-color: var(--amber)
+    }
+
+    .tab:not(.active):hover {
+      background: var(--mist);
+      border-color: var(--border);
+      color: var(--ink)
+    }
+
+    .tab-content {
+      padding: 2rem 2.4rem;
+      animation: fadeIn .3s ease
+    }
+
+    /* Books grid */
+    .books-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+      gap: 1.6rem
+    }
+
+    .book-card {
+      background: #fff;
+      border: 1.5px solid var(--border);
+      border-radius: var(--r);
+      overflow: hidden;
+      cursor: pointer;
+      transition: var(--tr);
+      box-shadow: var(--sh-sm)
+    }
+
+    .book-card:hover {
+      transform: translateY(-4px);
+      box-shadow: var(--sh-md);
+      border-color: var(--amber)
+    }
+
+    .book-cover {
+      width: 100%;
+      aspect-ratio: 2/3;
+      object-fit: cover;
+      display: block
+    }
+
+    .book-cover-ph {
+      width: 100%;
+      aspect-ratio: 2/3;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: .5rem;
+      background: linear-gradient(135deg, #F5EFE0, #E8D9C0);
+      font-size: 3rem;
+      color: #C4A97A
+    }
+
+    .book-cover-ph span {
+      font-size: .72rem;
+      color: #9B8B74
+    }
+
+    .book-info {
+      padding: .9rem 1rem
+    }
+
+    .book-title {
+      font-family: 'Playfair Display', serif;
+      font-size: .98rem;
+      font-weight: 700;
+      line-height: 1.3;
+      margin-bottom: .2rem;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden
+    }
+
+    .book-author {
+      font-size: .78rem;
+      color: #8C7A62
+    }
+
+    .avail-tag {
+      margin-top: .6rem;
+      font-size: .72rem;
+      padding: .2rem .6rem;
+      border-radius: 50px;
+      display: inline-block;
+      font-weight: 500
+    }
+
+    .tag-ok {
+      background: #E8F5EE;
+      color: var(--sage)
+    }
+
+    .tag-no {
+      background: #FEE8E8;
+      color: var(--rust)
+    }
+
+    /* Loans list (aluno) */
+    .loans-list {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem
+    }
+
+    .loan-item {
+      display: flex;
+      align-items: center;
+      gap: 1.2rem;
+      background: #fff;
+      border: 1.5px solid var(--border);
+      border-radius: var(--r);
+      padding: 1.2rem 1.4rem;
+      box-shadow: var(--sh-sm);
+      animation: slideUp .35s ease both
+    }
+
+    .loan-thumb {
+      width: 56px;
+      height: 80px;
+      border-radius: var(--r-sm);
+      object-fit: cover;
+      flex-shrink: 0;
+      background: var(--mist);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.6rem
+    }
+
+    .loan-info {
+      flex: 1
+    }
+
+    .loan-title {
+      font-family: 'Playfair Display', serif;
+      font-size: 1rem;
+      font-weight: 700;
+      margin-bottom: .2rem
+    }
+
+    .loan-author {
+      font-size: .82rem;
+      color: #8C7A62;
+      margin-bottom: .5rem
+    }
+
+    .loan-dates {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+      font-size: .78rem;
+      color: #6B5840
+    }
+
+    .status-badge {
+      padding: .3rem .8rem;
+      border-radius: 50px;
+      font-size: .76rem;
+      font-weight: 600;
+      white-space: nowrap
+    }
+
+    .s-ativo {
+      background: #E8F5EE;
+      color: var(--sage)
+    }
+
+    .s-atrasado {
+      background: #FEE8E8;
+      color: var(--rust)
+    }
+
+    .s-devolvido {
+      background: #F0EBE0;
+      color: #8C7A62
+    }
+
+    /* Modal agendamento */
+    .modal-cover-box {
+      width: 80px;
+      height: 110px;
+      border-radius: var(--r-sm);
+      overflow: hidden;
+      margin-bottom: 1rem;
+      background: var(--mist);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2.5rem
+    }
+
+    .modal-cover-box img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover
+    }
+
+    .prazo-hint {
+      font-size: .78rem;
+      color: var(--amber-dk);
+      margin-top: .3rem
+    }
+
+    /* ═══════════════════════════════════════════
+   TELA DA ESCOLA
+═══════════════════════════════════════════ */
+    #screen-escola {
+      display: flex;
+      min-height: 100vh
+    }
+
+    /* Sidebar */
+    .sidebar {
+      width: 240px;
+      flex-shrink: 0;
+      background: var(--ink);
+      display: flex;
+      flex-direction: column;
+      padding: 1.6rem 0;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto
+    }
+
+    .sb-brand {
+      display: flex;
+      align-items: center;
+      gap: .7rem;
+      padding: .5rem 1.4rem 1.8rem;
+      border-bottom: 1px solid rgba(255, 255, 255, .1);
+      margin-bottom: .8rem
+    }
+
+    .sb-brand .sb-logo {
+      font-size: 1.6rem
+    }
+
+    .sb-brand span:last-child {
+      font-family: 'Playfair Display', serif;
+      color: #fff;
+      font-size: 1rem;
+      font-weight: 700
+    }
+
+    .sb-nav {
+      display: flex;
+      flex-direction: column;
+      gap: .2rem;
+      padding: 0 .8rem;
+      flex: 1
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: .8rem;
+      padding: .75rem 1rem;
+      border: none;
+      background: transparent;
+      color: rgba(255, 255, 255, .55);
+      font-family: 'DM Sans', sans-serif;
+      font-size: .9rem;
+      border-radius: var(--r-sm);
+      cursor: pointer;
+      text-align: left;
+      transition: var(--tr);
+      position: relative
+    }
+
+    .nav-item:hover {
+      background: rgba(255, 255, 255, .07);
+      color: rgba(255, 255, 255, .85)
+    }
+
+    .nav-item.active {
+      background: var(--amber);
+      color: #fff;
+      font-weight: 500
+    }
+
+    .notif-dot {
+      margin-left: auto;
+      background: var(--rust);
+      color: #fff;
+      padding: .1rem .5rem;
+      border-radius: 50px;
+      font-size: .72rem;
+      font-weight: 700
+    }
+
+    .sb-user {
+      display: flex;
+      align-items: center;
+      gap: .7rem;
+      padding: 1.2rem 1.2rem .5rem;
+      border-top: 1px solid rgba(255, 255, 255, .1)
+    }
+
+    .sb-avatar {
+      width: 36px;
+      height: 36px;
+      background: rgba(255, 255, 255, .1);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.2rem;
+      flex-shrink: 0
+    }
+
+    .sb-name {
+      color: #fff;
+      font-size: .85rem;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 120px
+    }
+
+    .sb-role {
+      color: rgba(255, 255, 255, .4);
+      font-size: .72rem
+    }
+
+    .logout-sm {
+      margin-left: auto;
+      background: none;
+      border: none;
+      color: rgba(255, 255, 255, .5);
+      font-size: 1.1rem;
+      cursor: pointer;
+      padding: .3rem;
+      transition: var(--tr)
+    }
+
+    .logout-sm:hover {
+      color: var(--rust)
+    }
+
+    /* Main + panels */
+    .main {
+      flex: 1;
+      overflow-x: hidden;
+      min-height: 100vh
+    }
+
+    .panel {
+      padding: 2.4rem;
+      animation: fadeIn .3s ease
+    }
+
+    .panel-hdr {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 2rem;
+      gap: 1rem;
+      flex-wrap: wrap
+    }
+
+    .panel-hdr h1 {
+      font-size: 1.8rem
+    }
+
+    .panel-sub {
+      color: #8C7A62;
+      font-size: .88rem;
+      margin-top: .2rem
+    }
+
+    /* KPIs */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 1.2rem;
+      margin-bottom: 2.4rem
+    }
+
+    .kpi-card {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 1.4rem 1.6rem;
+      border-radius: var(--r);
+      border: 1.5px solid var(--border);
+      background: #fff;
+      box-shadow: var(--sh-sm)
+    }
+
+    .kpi-card.g {
+      border-left: 4px solid var(--sage)
+    }
+
+    .kpi-card.b {
+      border-left: 4px solid #3A7BC8
+    }
+
+    .kpi-card.o {
+      border-left: 4px solid var(--amber)
+    }
+
+    .kpi-card.p {
+      border-left: 4px solid #7C5C9E
+    }
+
+    .kpi-icon {
+      font-size: 2rem
+    }
+
+    .kpi-num {
+      display: block;
+      font-family: 'Playfair Display', serif;
+      font-size: 2rem;
+      font-weight: 700;
+      line-height: 1
+    }
+
+    .kpi-lbl {
+      font-size: .78rem;
+      color: #8C7A62;
+      margin-top: .2rem;
+      display: block
+    }
+
+    /* Activity */
+    .sec-title {
+      font-size: 1.15rem;
+      margin-bottom: 1rem
+    }
+
+    .act-list {
+      display: flex;
+      flex-direction: column;
+      gap: .7rem
+    }
+
+    .act-item {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: .85rem 1.2rem;
+      background: #fff;
+      border: 1.5px solid var(--border);
+      border-radius: var(--r-sm);
+      font-size: .88rem
+    }
+
+    .act-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0
+    }
+
+    .d-new {
+      background: var(--sage)
+    }
+
+    .d-late {
+      background: var(--rust)
+    }
+
+    .d-ret {
+      background: #3A7BC8
+    }
+
+    .act-time {
+      margin-left: auto;
+      color: #9B8B74;
+      font-size: .78rem;
+      white-space: nowrap
+    }
+
+    /* Add book btn */
+    .btn-add {
+      display: inline-flex;
+      align-items: center;
+      gap: .4rem;
+      padding: .7rem 1.4rem;
+      background: var(--amber);
+      color: #fff;
+      border: none;
+      border-radius: var(--r-sm);
+      font-family: 'DM Sans', sans-serif;
+      font-size: .9rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: var(--tr)
+    }
+
+    .btn-add:hover {
+      background: var(--amber-dk);
+      transform: translateY(-1px)
+    }
+
+    /* Search escola */
+    .escola-search {
+      padding: .7rem 1.1rem;
+      border: 1.5px solid var(--border);
+      border-radius: 50px;
+      font-family: 'DM Sans', sans-serif;
+      font-size: .9rem;
+      background: #fff;
+      width: 100%;
+      max-width: 400px;
+      outline: none;
+      transition: var(--tr);
+      margin-bottom: 1.4rem
+    }
+
+    .escola-search:focus {
+      border-color: var(--amber);
+      box-shadow: 0 0 0 3px rgba(201, 123, 46, .12)
+    }
+
+    /* Escola books grid */
+    .e-books-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+      gap: 1.4rem
+    }
+
+    .e-book-card {
+      background: #fff;
+      border: 1.5px solid var(--border);
+      border-radius: var(--r);
+      overflow: hidden;
+      box-shadow: var(--sh-sm)
+    }
+
+    .e-book-actions {
+      padding: .7rem 1rem;
+      display: flex;
+      gap: .5rem;
+      border-top: 1px solid var(--border)
+    }
+
+    .book-qtd {
+      font-size: .72rem;
+      color: #8C7A62;
+      padding: .3rem 1rem .6rem
+    }
+
+    /* Filter row */
+    .filter-row {
+      display: flex;
+      gap: .5rem;
+      margin-bottom: 1.4rem;
+      flex-wrap: wrap
+    }
+
+    .filter-btn {
+      padding: .45rem 1rem;
+      border: 1.5px solid var(--border);
+      border-radius: 50px;
+      background: transparent;
+      font-family: 'DM Sans', sans-serif;
+      font-size: .85rem;
+      cursor: pointer;
+      color: #8C7A62;
+      transition: var(--tr)
+    }
+
+    .filter-btn.active {
+      background: var(--ink);
+      color: #fff;
+      border-color: var(--ink)
+    }
+
+    .filter-btn:hover:not(.active) {
+      background: var(--mist);
+      color: var(--ink)
+    }
+
+    /* Table */
+    .tbl-wrap {
+      overflow-x: auto
+    }
+
+    .loans-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+      border-radius: var(--r);
+      overflow: hidden;
+      box-shadow: var(--sh-sm);
+      border: 1.5px solid var(--border)
+    }
+
+    .loans-table th {
+      padding: .85rem 1.1rem;
+      background: var(--mist);
+      text-align: left;
+      font-size: .78rem;
+      font-weight: 600;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      color: #6B5840;
+      border-bottom: 1.5px solid var(--border)
+    }
+
+    .loans-table td {
+      padding: .85rem 1.1rem;
+      border-bottom: 1px solid var(--border);
+      font-size: .88rem;
+      vertical-align: middle
+    }
+
+    .loans-table tr:last-child td {
+      border-bottom: none
+    }
+
+    .loans-table tr:hover td {
+      background: var(--mist)
+    }
+
+    .chip {
+      padding: .25rem .7rem;
+      border-radius: 50px;
+      font-size: .75rem;
+      font-weight: 600;
+      white-space: nowrap;
+      display: inline-block
+    }
+
+    .c-ativo {
+      background: #E8F5EE;
+      color: var(--sage)
+    }
+
+    .c-atrasado {
+      background: #FEE8E8;
+      color: var(--rust)
+    }
+
+    .c-devolvido {
+      background: #F0EBE0;
+      color: #8C7A62
+    }
+
+    .tbl-acts {
+      display: flex;
+      gap: .4rem
+    }
+
+    /* Alerts */
+    .alerts-list {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem
+    }
+
+    .alert-card {
+      display: flex;
+      align-items: center;
+      gap: 1.2rem;
+      padding: 1.2rem 1.4rem;
+      background: #fff;
+      border: 1.5px solid #FECACA;
+      border-left: 4px solid var(--rust);
+      border-radius: var(--r);
+      box-shadow: var(--sh-sm)
+    }
+
+    .alert-icon {
+      font-size: 1.8rem
+    }
+
+    .alert-info {
+      flex: 1
+    }
+
+    .alert-name {
+      font-weight: 600;
+      font-size: .95rem
+    }
+
+    .alert-detail {
+      font-size: .82rem;
+      color: #8C7A62;
+      margin-top: .2rem
+    }
+
+    .alert-days {
+      background: #FEE8E8;
+      color: var(--rust);
+      font-weight: 700;
+      font-size: .85rem;
+      padding: .4rem .8rem;
+      border-radius: 50px;
+      white-space: nowrap
+    }
+
+    /* Config cards */
+    .cfg-card {
+      background: #fff;
+      border: 1.5px solid var(--border);
+      border-radius: var(--r);
+      padding: 1.8rem;
+      margin-bottom: 1.4rem;
+      max-width: 560px;
+      box-shadow: var(--sh-sm)
+    }
+
+    .cfg-card h3 {
+      font-size: 1rem;
+      margin-bottom: .4rem
+    }
+
+    .cfg-card>.cfg-desc {
+      color: #8C7A62;
+      font-size: .85rem;
+      margin-bottom: 1rem
+    }
+
+    .cfg-row {
+      display: flex;
+      align-items: center;
+      gap: .8rem
+    }
+
+    .cfg-input {
+      padding: .6rem .9rem;
+      border: 1.5px solid var(--border);
+      border-radius: var(--r-sm);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 1rem;
+      width: 100px;
+      outline: none;
+      transition: var(--tr)
+    }
+
+    .cfg-input:focus {
+      border-color: var(--amber)
+    }
+
+    .cfg-unit {
+      color: #8C7A62;
+      font-size: .9rem
+    }
+
+    .btn-save {
+      padding: .6rem 1.2rem;
+      background: var(--sage);
+      color: #fff;
+      border: none;
+      border-radius: var(--r-sm);
+      font-family: 'DM Sans', sans-serif;
+      font-size: .88rem;
+      cursor: pointer;
+      transition: var(--tr)
+    }
+
+    .btn-save:hover {
+      opacity: .85
+    }
+
+    /* Upload */
+    .upload-area {
+      border: 2px dashed var(--border);
+      border-radius: var(--r);
+      background: var(--mist);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 180px;
+      cursor: pointer;
+      transition: var(--tr);
+      overflow: hidden;
+      margin-bottom: 1rem;
+      position: relative
+    }
+
+    .upload-area:hover {
+      border-color: var(--amber);
+      background: #FFF8ED
+    }
+
+    .upload-inner {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: .4rem;
+      color: #8C7A62;
+      text-align: center;
+      padding: 1rem
+    }
+
+    .upload-icon {
+      font-size: 2.5rem
+    }
+
+    .upload-inner p {
+      font-size: .9rem;
+      font-weight: 500
+    }
+
+    .upload-inner small {
+      font-size: .78rem;
+      opacity: .7
+    }
+
+    .preview-img {
+      width: 100%;
+      height: 220px;
+      object-fit: contain
+    }
+
+    /* 📱 MOBILE */
+@media (max-width: 768px) {
+
+  /* Topo */
+  .top-bar {
+    flex-direction: column;
+    padding: 1rem;
+    gap: .5rem;
+  }
+
+  .top-center {
+    width: 100%;
+  }
+
+  /* Hero */
+  .hero {
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 1.5rem 1rem;
+  }
+
+  .hero h1 {
+    font-size: 1.6rem;
+  }
+
+  /* Tabs */
+  .tabs {
+    overflow-x: auto;
+    padding: 0 1rem 1rem;
+  }
+
+  /* Grid de livros */
+  .books-grid,
+  .e-books-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1rem;
+  }
+
+  /* Cards */
+  .book-card {
+    width: 100%;
+  }
+
+  /* Sidebar vira topo */
+  .sidebar {
+    position: fixed;
+    width: 100%;
+    height: 190px;
+    flex-direction: row;
+    overflow-x: auto;
+    z-index: 100;
+  }
+
+  .main {
+    margin-top: 80px;
+  }
+
+  /* Painel */
+  .panel {
+    padding: 1rem;
+  }
+
+  /* KPI */
+  .kpi-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  /* Login */
+  .login-card {
+    padding: 1.5rem;
+    margin: 0 1rem;
+  }
+}
+  </style>
+</head>
+
+<body>
+
+  <!-- ═══════════════════ TELA: LOGIN ═══════════════════ -->
+  <div id="screen-login">
+    <div class="bg-c1"></div>
+    <div class="bg-c2"></div>
+    <div class="bg-grid"></div>
+
+    <div class="login-brand">
+      <span class="b-icon">📚</span>
+      <h1>BiblioEscola</h1>
+      <p>Sistema de Gestão de Biblioteca</p>
+    </div>
+
+    <div class="type-toggle">
+      <button class="tg-btn active" id="btnAluno" onclick="switchType('aluno')">🎒 Sou Aluno</button>
+      <button class="tg-btn" id="btnEscola" onclick="switchType('escola')">🏫 Sou Escola</button>
+    </div>
+
+    <!-- Form Aluno -->
+    <div class="login-card" id="formAluno">
+      <h2>Acesso do Aluno</h2>
+      <div class="field-group">
+        <label>Nome completo</label>
+        <input type="text" id="alunoNome" placeholder="Seu nome" oninput="onAlunoChange()" />
+      </div>
+      <div class="field-group">
+        <label>Série / Turma</label>
+        <select id="alunoSerie" onchange="onAlunoChange()">
+          <option value="" disabled selected>Selecione sua série</option>
+          <option>1º Ano — Ensino Fundamental</option>
+          <option>2º Ano — Ensino Fundamental</option>
+          <option>3º Ano — Ensino Fundamental</option>
+          <option>4º Ano — Ensino Fundamental</option>
+          <option>5º Ano — Ensino Fundamental</option>
+          <option>6º Ano — Ensino Fundamental</option>
+          <option>7º Ano — Ensino Fundamental</option>
+          <option>8º Ano — Ensino Fundamental</option>
+          <option>9º Ano — Ensino Fundamental</option>
+          <option>1º Ano — Ensino Médio</option>
+          <option>2º Ano — Ensino Médio</option>
+          <option>3º Ano — Ensino Médio</option>
+        </select>
+      </div>
+      <!-- Info dinâmica -->
+      <div class="hint-box hidden" id="alunoSenhaInfo" style="margin-bottom:1rem"></div>
+      <!-- Campo senha -->
+      <div class="field-group">
+        <label id="alunoSenhaLabel">Sua Senha</label>
+        <div class="pass-wrap">
+          <input type="password" id="alunoSenha" placeholder="••••••••" />
+          <button class="eye-btn" onclick="toggleAlunoPass()">👁</button>
+        </div>
+      </div>
+      <!-- Confirmar senha — só no primeiro acesso -->
+      <div class="field-group hidden" id="alunoSenhaConfRow">
+        <label>Confirmar Senha</label>
+        <input type="password" id="alunoSenhaConf" placeholder="Repita a senha" />
+      </div>
+      <button class="btn btn-primary btn-full" onclick="loginAluno()">Entrar na Biblioteca →</button>
+      <p class="login-note">🔑 Sua senha é pessoal e fica salva neste dispositivo</p>
+    </div>
+
+    <!-- Form Escola -->
+    <div class="login-card hidden" id="formEscola">
+      <h2>Acesso da Escola</h2>
+      <div class="field-group">
+        <label>Nome da Escola</label>
+        <input type="text" id="escolaNome" placeholder="Ex: Escola Glorita" oninput="onEscolaChange()" />
+      </div>
+      <div class="field-group">
+        <label>Nome do Coordenador</label>
+        <input type="text" id="escolaCoordenador" placeholder="Nome do coordenador" />
+      </div>
+      <!-- Info dinâmica -->
+      <div class="hint-box hidden" id="escolaSenhaInfo" style="margin-bottom:1rem"></div>
+      <div class="field-group">
+        <label id="escolaSenhaLabel">Senha de Acesso</label>
+        <div class="pass-wrap">
+          <input type="password" id="escolaSenha" placeholder="••••••••" />
+          <button class="eye-btn" onclick="togglePass()">👁</button>
+        </div>
+      </div>
+      <!-- Confirmar senha — só no primeiro acesso -->
+      <div class="field-group hidden" id="escolaSenhaConfRow">
+        <label>Confirmar Senha</label>
+        <input type="password" id="escolaSenhaConf" placeholder="Repita a senha" />
+      </div>
+      <button class="btn btn-escola btn-full" onclick="loginEscola()">Acessar Painel →</button>
+      <p class="login-note">🏫 Cada escola possui sua própria senha</p>
+    </div>
+
+    <p class="login-footer">© 2025 BiblioEscola</p>
+  </div>
+
+  <!-- ═══════════════════ TELA: ALUNO ═══════════════════ -->
+  <div id="screen-aluno" class="hidden">
+
+    <header class="top-bar">
+      <span class="logo-sm">📚 BiblioEscola</span>
+      <div class="top-center">
+        <div class="search-bar">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="searchInput" placeholder="Buscar por título ou autor..." oninput="filterBooks()" />
+          <button class="search-clear" onclick="clearSearch()">✕</button>
+        </div>
+      </div>
+      <div class="top-right">
+        <div class="user-pill">
+          <span id="hdrNome">—</span>
+          <span class="pill-badge" id="hdrSerie">—</span>
+        </div>
+        <button class="logout-btn" onclick="logout()">Sair</button>
+      </div>
+    </header>
+
+    <section class="hero">
+      <div>
+        <p class="hero-lbl">Olá, bem-vindo(a) 👋</p>
+        <h1 id="heroNome">—</h1>
+        <p class="hero-serie" id="heroSerie">—</p>
+      </div>
+      <div class="hero-stats">
+        <div class="stat-card"><span class="stat-num" id="statTotal">0</span><span class="stat-lbl">Livros
+            Disponíveis</span></div>
+        <div class="stat-card"><span class="stat-num" id="statMeus">0</span><span class="stat-lbl">Meus
+            Empréstimos</span></div>
+      </div>
+    </section>
+
+    <div class="tabs">
+      <button class="tab active" id="tabCatalogo" onclick="showTab('catalogo')">📖 Catálogo</button>
+      <button class="tab" id="tabMeus" onclick="showTab('meus')">🗂 Meus Empréstimos</button>
+    </div>
+
+    <div id="tab-catalogo" class="tab-content">
+      <div class="books-grid" id="booksGrid"></div>
+      <div class="empty-state hidden" id="emptySearch">
+        <span class="es-icon">📭</span>
+        <p>Nenhum livro encontrado</p><small>Tente outro título ou autor</small>
+      </div>
+    </div>
+
+    <div id="tab-meus" class="tab-content hidden">
+      <div class="loans-list" id="loansList"></div>
+      <div class="empty-state hidden" id="emptyLoans">
+        <span class="es-icon">📂</span>
+        <p>Você ainda não tem empréstimos</p><small>Vá ao catálogo e agende um livro!</small>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Agendamento -->
+  <div class="modal-overlay hidden" id="modalAgend">
+    <div class="modal-box">
+      <button class="modal-close" onclick="closeAgend()">✕</button>
+      <div class="modal-cover-box" id="agendCover">📕</div>
+      <h2 class="modal-title" id="agendTitle">—</h2>
+      <p class="modal-sub" id="agendAuthor">—</p>
+      <div class="modal-fields">
+        <div class="field-group">
+          <label>Data de Retirada</label>
+          <input type="date" id="dateRet" />
+        </div>
+        <div class="field-group">
+          <label>Data de Devolução</label>
+          <input type="date" id="dateDev" />
+          <small class="prazo-hint" id="prazoHint"></small>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-cancel" onclick="closeAgend()">Cancelar</button>
+        <button class="btn btn-primary" onclick="confirmarAgend()">Confirmar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════ TELA: ESCOLA ═══════════════════ -->
+  <div id="screen-escola" class="hidden">
+
+    <aside class="sidebar">
+      <div class="sb-brand">
+        <span class="sb-logo">📚</span>
+        <span>BiblioEscola</span>
+      </div>
+      <nav class="sb-nav">
+        <button class="nav-item active" id="nav-dashboard" onclick="showPanel('dashboard',this)"><span>📊</span>
+          Dashboard</button>
+        <button class="nav-item" id="nav-livros" onclick="showPanel('livros',this)"><span>📖</span> Livros</button>
+        <button class="nav-item" id="nav-emprestimos" onclick="showPanel('emprestimos',this)"><span>📋</span>
+          Empréstimos</button>
+        <button class="nav-item" id="nav-alunos" onclick="showPanel('alunos',this)"><span>👥</span> Alunos</button>
+        <button class="nav-item" id="nav-alertas" onclick="showPanel('alertas',this)">
+          <span>🔔</span> Alertas
+          <span class="notif-dot hidden" id="notifDot">0</span>
+        </button>
+        <button class="nav-item" id="nav-config" onclick="showPanel('config',this)"><span>⚙️</span>
+          Configurações</button>
+      </nav>
+      <div class="sb-user">
+        <div class="sb-avatar">👩‍💼</div>
+        <div>
+          <p class="sb-name" id="sbNome">—</p>
+          <p class="sb-role" id="sbEscola">Escola</p>
+        </div>
+        <button class="logout-sm" onclick="logout()" title="Sair">⏻</button>
+      </div>
+    </aside>
+
+    <main class="main">
+
+      <!-- Dashboard -->
+      <div class="panel" id="panel-dashboard">
+        <div class="panel-hdr">
+          <div>
+            <h1>Dashboard</h1>
+            <p class="panel-sub">Visão geral da biblioteca</p>
+          </div>
+        </div>
+        <div class="kpi-grid">
+          <div class="kpi-card g"><span class="kpi-icon">📚</span>
+            <div><span class="kpi-num" id="kpiL">0</span><span class="kpi-lbl">Total de Livros</span></div>
+          </div>
+          <div class="kpi-card b"><span class="kpi-icon">📤</span>
+            <div><span class="kpi-num" id="kpiA">0</span><span class="kpi-lbl">Empréstimos Ativos</span></div>
+          </div>
+          <div class="kpi-card o"><span class="kpi-icon">⏰</span>
+            <div><span class="kpi-num" id="kpiAt">0</span><span class="kpi-lbl">Em Atraso</span></div>
+          </div>
+          <div class="kpi-card p"><span class="kpi-icon">✅</span>
+            <div><span class="kpi-num" id="kpiD">0</span><span class="kpi-lbl">Devolvidos</span></div>
+          </div>
+          <div class="kpi-card" style="border-left:4px solid #3A7BC8"><span class="kpi-icon">👥</span>
+            <div><span class="kpi-num" id="kpiAl">0</span><span class="kpi-lbl">Alunos Cadastrados</span></div>
+          </div>
+        </div>
+        <p class="sec-title">Atividade Recente</p>
+        <div class="act-list" id="actList"></div>
+      </div>
+
+      <!-- Livros -->
+      <div class="panel hidden" id="panel-livros">
+        <div class="panel-hdr">
+          <div>
+            <h1>Acervo de Livros</h1>
+          </div>
+          <button class="btn-add" onclick="openAddBook()">+ Adicionar Livro</button>
+        </div>
+        <input class="escola-search" type="text" id="eSearch" placeholder="🔍 Buscar livro..."
+          oninput="filterEBooks()" />
+        <div class="e-books-grid" id="eBooksGrid"></div>
+        <div class="empty-state hidden" id="emptyE"><span class="es-icon">📭</span>
+          <p>Nenhum livro no acervo</p><small>Adicione o primeiro livro acima</small>
+        </div>
+      </div>
+
+      <!-- Empréstimos -->
+      <div class="panel hidden" id="panel-emprestimos">
+        <div class="panel-hdr">
+          <div>
+            <h1>Controle de Empréstimos</h1>
+            <p class="panel-sub">Gerencie prazos e devoluções</p>
+          </div>
+        </div>
+        <div class="filter-row">
+          <button class="filter-btn active" onclick="filterLoans('todos',this)">Todos</button>
+          <button class="filter-btn" onclick="filterLoans('ativo',this)">Ativos</button>
+          <button class="filter-btn" onclick="filterLoans('atrasado',this)">Atrasados</button>
+          <button class="filter-btn" onclick="filterLoans('devolvido',this)">Devolvidos</button>
+        </div>
+        <div class="tbl-wrap">
+          <table class="loans-table">
+            <thead>
+              <tr>
+                <th>Aluno</th>
+                <th>Série</th>
+                <th>Livro</th>
+                <th>Retirada</th>
+                <th>Devolução</th>
+                <th>Status</th>
+                <th>Ações</th>
+              </tr>
+            </thead>
+            <tbody id="loansTbody"></tbody>
+          </table>
+          <div class="empty-state hidden" id="emptyLE"><span class="es-icon">📋</span>
+            <p>Nenhum empréstimo encontrado</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Alertas -->
+      <div class="panel hidden" id="panel-alertas">
+        <div class="panel-hdr">
+          <div>
+            <h1>🔔 Alertas de Atraso</h1>
+            <p class="panel-sub">Alunos que não devolveram no prazo</p>
+          </div>
+        </div>
+        <div class="alerts-list" id="alertsList"></div>
+        <div class="empty-state hidden" id="emptyAl"><span class="es-icon">✅</span>
+          <p>Tudo certo! Nenhum atraso</p>
+        </div>
+      </div>
+
+      <!-- Alunos -->
+      <div class="panel hidden" id="panel-alunos">
+        <div class="panel-hdr">
+          <div>
+            <h1>👥 Gestão de Alunos</h1>
+            <p class="panel-sub">Alunos cadastrados com senha no sistema</p>
+          </div>
+        </div>
+        <div style="display:flex;gap:.8rem;margin-bottom:1.4rem;flex-wrap:wrap;align-items:center">
+          <input class="escola-search" type="text" id="alunoSearch" placeholder="🔍 Buscar aluno..." oninput="renderAlunosTable()" style="margin-bottom:0;flex:1;min-width:200px" />
+          <select id="alunoSerieFilter" onchange="renderAlunosTable()" style="padding:.7rem 1.1rem;border:1.5px solid var(--border);border-radius:50px;font-family:'DM Sans',sans-serif;font-size:.9rem;background:#fff;outline:none;min-width:200px">
+            <option value="">Todas as séries</option>
+            <option>1º Ano — Ensino Fundamental</option>
+            <option>2º Ano — Ensino Fundamental</option>
+            <option>3º Ano — Ensino Fundamental</option>
+            <option>4º Ano — Ensino Fundamental</option>
+            <option>5º Ano — Ensino Fundamental</option>
+            <option>6º Ano — Ensino Fundamental</option>
+            <option>7º Ano — Ensino Fundamental</option>
+            <option>8º Ano — Ensino Fundamental</option>
+            <option>9º Ano — Ensino Fundamental</option>
+            <option>1º Ano — Ensino Médio</option>
+            <option>2º Ano — Ensino Médio</option>
+            <option>3º Ano — Ensino Médio</option>
+          </select>
+        </div>
+        <div class="tbl-wrap">
+          <table class="loans-table">
+            <thead>
+              <tr>
+                <th>Aluno</th>
+                <th>Série</th>
+                <th>Empréstimos Ativos</th>
+                <th>Total Histórico</th>
+                <th>Situação</th>
+                <th>Ações</th>
+              </tr>
+            </thead>
+            <tbody id="alunosTbody"></tbody>
+          </table>
+          <div class="empty-state hidden" id="emptyAlunos">
+            <span class="es-icon">👤</span>
+            <p>Nenhum aluno cadastrado ainda</p>
+            <small>Os alunos aparecem aqui após o primeiro login com senha</small>
+          </div>
+        </div>
+      </div>
+
+      <!-- Configurações -->
+      <div class="panel hidden" id="panel-config">
+        <div class="panel-hdr">
+          <div>
+            <h1>Configurações</h1>
+          </div>
+        </div>
+        <div class="cfg-card">
+          <h3>⏱ Prazo Padrão de Empréstimo</h3>
+          <p class="cfg-desc">Dias máximos que um aluno pode ficar com um livro</p>
+          <div class="cfg-row">
+            <input type="number" class="cfg-input" id="cfgPrazo" min="1" max="60" value="14" />
+            <span class="cfg-unit">dias</span>
+            <button class="btn-save" onclick="savePrazo()">Salvar</button>
+          </div>
+        </div>
+        <div class="cfg-card">
+          <h3>🔑 Alterar Senha de Acesso</h3>
+          <div class="field-group"><label>Senha Atual</label><input type="password" id="senhaAtual"
+              placeholder="••••••••" /></div>
+          <div class="field-group"><label>Nova Senha</label><input type="password" id="senhaNova"
+              placeholder="••••••••" /></div>
+          <div class="field-group"><label>Confirmar Nova Senha</label><input type="password" id="senhaConf"
+              placeholder="••••••••" /></div>
+          <button class="btn btn-primary" onclick="alterarSenha()">Atualizar Senha</button>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- Modal Adicionar Livro -->
+  <div class="modal-overlay hidden" id="modalAddBook">
+    <div class="modal-box lg">
+      <button class="modal-close" onclick="closeAddBook()">✕</button>
+      <h2 class="modal-title">Adicionar Novo Livro</h2>
+      <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileIn').click()">
+        <div class="upload-inner" id="uploadInner">
+          <span class="upload-icon">📷</span>
+          <p>Clique para selecionar a foto da capa</p>
+          <small>JPG, PNG — máx 5MB</small>
+        </div>
+        <img id="previewImg" class="preview-img hidden" alt="capa" />
+      </div>
+      <input type="file" id="fileIn" accept="image/*" class="hidden" onchange="previewImg(event)" />
+      <div class="modal-fields">
+        <div class="field-group"><label>Título do Livro</label><input type="text" id="newTitle"
+            placeholder="Ex: Dom Quixote" /></div>
+        <div class="field-group"><label>Nome do Autor</label><input type="text" id="newAuthor"
+            placeholder="Ex: Miguel de Cervantes" /></div>
+        <div class="field-group"><label>Quantidade de Exemplares</label><input type="number" id="newQtd" min="1"
+            value="1" /></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-cancel" onclick="closeAddBook()">Cancelar</button>
+        <button class="btn btn-primary" onclick="saveBook()">Adicionar ao Acervo</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Histórico do Aluno -->
+  <div class="modal-overlay hidden" id="modalHistAluno">
+    <div class="modal-box lg">
+      <button class="modal-close" onclick="closeHistAluno()">✕</button>
+      <h2 class="modal-title">📋 Histórico de Empréstimos</h2>
+      <p class="modal-sub" id="histAlunoNome"></p>
+      <div class="tbl-wrap" style="margin-top:1rem">
+        <table class="loans-table">
+          <thead>
+            <tr>
+              <th>Livro</th>
+              <th>Retirada</th>
+              <th>Devolução</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="histTbody"></tbody>
+        </table>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-cancel" onclick="closeHistAluno()">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal ajuste de prazo -->
+  <div class="modal-overlay hidden" id="modalPrazo">
+    <div class="modal-box">
+      <button class="modal-close" onclick="closePrazoModal()">✕</button>
+      <h2 class="modal-title">Ajustar Prazo</h2>
+      <p class="modal-sub" id="prazoLoanInfo"></p>
+      <div class="field-group" style="margin-top:1rem">
+        <label>Nova data de devolução</label>
+        <input type="date" id="novaDev" />
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-cancel" onclick="closePrazoModal()">Cancelar</button>
+        <button class="btn btn-primary" onclick="salvarPrazo()">Salvar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="hidden"></div>
+
+  <!-- Firebase SDK -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import {
+      getFirestore, doc, getDoc, setDoc, updateDoc,
+      collection, getDocs, addDoc, deleteDoc, query, where
+    } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+    /* ═══════════════════════════════════════════
+       FIREBASE CONFIG
+    ═══════════════════════════════════════════ */
+    const firebaseConfig = {
+      apiKey: "AIzaSyCstHWPksHJjP_jqTIhJg98PI6t7AucNjI",
+      authDomain: "biblioescola-14f8d.firebaseapp.com",
+      projectId: "biblioescola-14f8d",
+      storageBucket: "biblioescola-14f8d.firebasestorage.app",
+      messagingSenderId: "80392046952",
+      appId: "1:80392046952:web:0b41b52f9148f1a75ceedd"
+    };
+    const app = initializeApp(firebaseConfig);
+    const db  = getFirestore(app);
+
+    /* ═══════════════════════════════════════════
+       HELPERS DE COLEÇÃO POR ESCOLA
+       Estrutura: escolas/{escolaId}/livros, emprestimos, atividade, config
+                  alunos/{alunoKey}  — global (senha por aluno)
+                  escolas/{escolaId} — doc raiz com senha e prazo
+    ═══════════════════════════════════════════ */
+    function escolaId() {
+      return SESSION?.escola?.trim().toLowerCase().replace(/\s+/g, '_') || '_sem_escola';
+    }
+    function col(sub)  { return collection(db, 'escolas', escolaId(), sub); }
+    function docRef(sub, id) { return doc(db, 'escolas', escolaId(), sub, id); }
+    function escolaDoc() { return doc(db, 'escolas', escolaId()); }
+
+    // Sessão (memória RAM)
+    let SESSION = null;
+
+    // Cache em memória para leituras síncronas durante a sessão
+    let CACHE = { books: null, loans: null, act: null, prazo: null };
+    function invalidate() { CACHE = { books: null, loans: null, act: null, prazo: null }; }
+
+    /* ── Loading overlay ── */
+    function showLoading(msg = 'Carregando...') {
+      let el = document.getElementById('loadingOverlay');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'loadingOverlay';
+        el.style.cssText = 'position:fixed;inset:0;background:rgba(4,61,9,.7);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1rem;color:#fff;font-family:DM Sans,sans-serif;backdrop-filter:blur(4px)';
+        el.innerHTML = '<div style="font-size:2.5rem">📚</div><p id="loadingMsg" style="font-size:1.1rem;font-weight:500"></p><div style="width:40px;height:40px;border:4px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite"></div><style>@keyframes spin{to{transform:rotate(360deg)}}</style>';
+        document.body.appendChild(el);
+      }
+      document.getElementById('loadingMsg').textContent = msg;
+      el.classList.remove('hidden');
+    }
+    function hideLoading() {
+      const el = document.getElementById('loadingOverlay');
+      if (el) el.classList.add('hidden');
+    }
+
+    /* ═══════════════════════════════════════════
+       SENHAS DE ALUNOS — coleção global "alunos"
+    ═══════════════════════════════════════════ */
+    function alunoPassKey(nome, serie) { return (nome + '_' + serie).toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_]/g,''); }
+
+    async function getAlunoPass(nome, serie) {
+      try {
+        const snap = await getDoc(doc(db, 'alunos', alunoPassKey(nome, serie)));
+        return snap.exists() ? snap.data().senha : null;
+      } catch { return null; }
+    }
+    async function setAlunoPass(nome, serie, senha) {
+      await setDoc(doc(db, 'alunos', alunoPassKey(nome, serie)), { nome, serie, senha, criadoEm: new Date().toISOString() });
+    }
+    async function alunoTemSenha(nome, serie) { return (await getAlunoPass(nome, serie)) !== null; }
+
+    async function getAllAlunos() {
+      const snap = await getDocs(collection(db, 'alunos'));
+      return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    }
+    async function deleteAlunoPass(alunoDocId) {
+      await deleteDoc(doc(db, 'alunos', alunoDocId));
+    }
+
+    /* ═══════════════════════════════════════════
+       SENHAS DE ESCOLA — doc raiz da escola
+    ═══════════════════════════════════════════ */
+    async function getPass(escola) {
+      try {
+        const snap = await getDoc(doc(db, 'escolas', escola.trim().toLowerCase().replace(/\s+/g,'_')));
+        return snap.exists() ? (snap.data().senha || null) : null;
+      } catch { return null; }
+    }
+    async function setPass(escola, senha) {
+      const ref = doc(db, 'escolas', escola.trim().toLowerCase().replace(/\s+/g,'_'));
+      const snap = await getDoc(ref);
+      if (snap.exists()) {
+        await updateDoc(ref, { senha });
+      } else {
+        await setDoc(ref, { nome: escola, senha, criadoEm: new Date().toISOString() });
+      }
+    }
+    async function escolaTemSenha(escola) { return (await getPass(escola)) !== null; }
+
+    /* ═══════════════════════════════════════════
+       LIVROS
+    ═══════════════════════════════════════════ */
+    async function loadBooks() {
+      const snap = await getDocs(col('livros'));
+      CACHE.books = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      return CACHE.books;
+    }
+    function getBooks() { return CACHE.books || []; }
+    function getBookById(id) { return getBooks().find(b => b.id === id) || null; }
+
+    async function addBook(book) {
+      book.criadoEm = new Date().toISOString();
+      const ref = await addDoc(col('livros'), book);
+      book.id = ref.id;
+      CACHE.books = [...getBooks(), book];
+      await addAct(`📖 Livro "${book.title}" adicionado ao acervo`, 'new');
+      return book;
+    }
+
+    async function deleteBook(id) {
+      await deleteDoc(docRef('livros', id));
+      CACHE.books = getBooks().filter(b => b.id !== id);
+    }
+
+    function getAvailCopies(bookId) {
+      const book = getBookById(bookId);
+      if (!book) return 0;
+      const out = getLoans().filter(l => l.bookId === bookId && l.status !== 'devolvido').length;
+      return Math.max(0, (book.quantity || 1) - out);
+    }
+
+    /* ═══════════════════════════════════════════
+       EMPRÉSTIMOS
+    ═══════════════════════════════════════════ */
+    async function loadLoans() {
+      const snap = await getDocs(col('emprestimos'));
+      CACHE.loans = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      return CACHE.loans;
+    }
+    function getLoans() { return CACHE.loans || []; }
+
+    async function addLoan(loan) {
+      loan.status = 'ativo';
+      loan.criadoEm = new Date().toISOString();
+      const ref = await addDoc(col('emprestimos'), loan);
+      loan.id = ref.id;
+      CACHE.loans = [...getLoans(), loan];
+      await addAct(`📤 ${loan.alunoNome} agendou "${loan.bookTitle}"`, 'new');
+      return loan;
+    }
+
+    function getLoansByAluno(nome, serie) {
+      return getLoans().filter(l => l.alunoNome === nome && l.alunoSerie === serie);
+    }
+
+    async function markReturned(id) {
+      const loans = getLoans();
+      const i = loans.findIndex(l => l.id === id);
+      if (i < 0) return;
+      loans[i].status = 'devolvido';
+      loans[i].returnedAt = new Date().toISOString();
+      await updateDoc(docRef('emprestimos', id), { status: 'devolvido', returnedAt: loans[i].returnedAt });
+      await addAct(`✅ "${loans[i].bookTitle}" devolvido por ${loans[i].alunoNome}`, 'returned');
+      CACHE.loans = loans;
+    }
+
+    async function updateLoanDev(id, novaData) {
+      const loans = getLoans();
+      const i = loans.findIndex(l => l.id === id);
+      if (i < 0) return;
+      loans[i].dateDevolucao = novaData;
+      await updateDoc(docRef('emprestimos', id), { dateDevolucao: novaData });
+      CACHE.loans = loans;
+    }
+
+    async function refreshStatuses() {
+      const loans = getLoans();
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      const updates = [];
+      loans.forEach(l => {
+        if (l.status === 'devolvido') return;
+        const dev = new Date(l.dateDevolucao); dev.setHours(0, 0, 0, 0);
+        const novo = dev < today ? 'atrasado' : 'ativo';
+        if (l.status !== novo) {
+          l.status = novo;
+          updates.push(updateDoc(docRef('emprestimos', l.id), { status: novo }));
+          if (novo === 'atrasado') updates.push(addAct(`⏰ Atraso: ${l.alunoNome} — "${l.bookTitle}"`, 'late'));
+        }
+      });
+      await Promise.all(updates);
+      CACHE.loans = loans;
+    }
+
+    function getLateLoans() { return getLoans().filter(l => l.status === 'atrasado'); }
+
+    /* ═══════════════════════════════════════════
+       CONFIGURAÇÕES (prazo por escola)
+    ═══════════════════════════════════════════ */
+    async function getPrazo() {
+      if (CACHE.prazo !== null) return CACHE.prazo;
+      try {
+        const snap = await getDoc(escolaDoc());
+        CACHE.prazo = snap.exists() ? (snap.data().prazo || 14) : 14;
+      } catch { CACHE.prazo = 14; }
+      return CACHE.prazo;
+    }
+    async function setPrazo(d) {
+      CACHE.prazo = d;
+      const ref = escolaDoc();
+      const snap = await getDoc(ref);
+      if (snap.exists()) { await updateDoc(ref, { prazo: d }); }
+      else { await setDoc(ref, { prazo: d }); }
+    }
+
+    /* ═══════════════════════════════════════════
+       ATIVIDADE
+    ═══════════════════════════════════════════ */
+    async function loadAct() {
+      const snap = await getDocs(col('atividade'));
+      CACHE.act = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+        .sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 30);
+      return CACHE.act;
+    }
+    function getAct() { return CACHE.act || []; }
+    async function addAct(msg, type) {
+      const item = { msg, type, at: new Date().toISOString() };
+      const ref = await addDoc(col('atividade'), item);
+      item.id = ref.id;
+      CACHE.act = [item, ...getAct()].slice(0, 30);
+    }
+
+    /* ── Datas ── */
+    function fmtDate(iso) {
+      if (!iso) return '—';
+      const [y, m, d] = iso.split('-');
+      return `${d}/${m}/${y}`;
+    }
+    function todayISO() { return new Date().toISOString().split('T')[0] }
+    function addDays(iso, n) { const d = new Date(iso); d.setDate(d.getDate() + n); return d.toISOString().split('T')[0] }
+    function diffDays(d1, d2) { return Math.round((new Date(d2) - new Date(d1)) / (1000 * 60 * 60 * 24)) }
+
+    /* ── Toast ── */
+    function toast(msg, type = '') {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.className = type ? type : '';
+      el.classList.remove('hidden');
+      clearTimeout(el._t);
+      el._t = setTimeout(() => el.classList.add('hidden'), 3200);
+    }
+
+    /* ═══════════════════════════════════════════
+       ROTEAMENTO — troca de telas
+    ═══════════════════════════════════════════ */
+    function showScreen(name) {
+      ['login', 'aluno', 'escola'].forEach(s => {
+        document.getElementById('screen-' + s).classList.toggle('hidden', s !== name);
+      });
+      // escola precisa de flex
+      if (name === 'escola') document.getElementById('screen-escola').style.display = 'flex';
+    }
+
+    /* ═══════════════════════════════════════════
+       LOGIN
+    ═══════════════════════════════════════════ */
+    function switchType(type) {
+      const isAluno = type === 'aluno';
+      document.getElementById('formAluno').classList.toggle('hidden', !isAluno);
+      document.getElementById('formEscola').classList.toggle('hidden', isAluno);
+      document.getElementById('btnAluno').classList.toggle('active', isAluno);
+      document.getElementById('btnEscola').classList.toggle('active', !isAluno);
+    }
+
+    async function loginAluno() {
+      const nome = document.getElementById('alunoNome').value.trim();
+      const serie = document.getElementById('alunoSerie').value;
+      const senha = document.getElementById('alunoSenha').value;
+      const senhaConf = document.getElementById('alunoSenhaConf').value;
+      if (!nome) { toast('Digite seu nome', 'err'); return }
+      if (!serie) { toast('Selecione sua série', 'err'); return }
+
+      showLoading('Verificando acesso...');
+      try {
+        const temSenha = await alunoTemSenha(nome, serie);
+        if (temSenha) {
+          if (!senha) { hideLoading(); toast('Digite sua senha', 'err'); return }
+          const senhaCorreta = await getAlunoPass(nome, serie);
+          if (senha !== senhaCorreta) {
+            hideLoading();
+            toast('Senha incorreta!', 'err');
+            const f = document.getElementById('formAluno');
+            f.style.animation = 'none'; f.offsetHeight; f.style.animation = 'shake .4s ease';
+            return;
+          }
+        } else {
+          if (!senha || senha.length < 4) { hideLoading(); toast('Crie uma senha com no mínimo 4 caracteres', 'err'); return }
+          if (senha !== senhaConf) { hideLoading(); toast('As senhas não coincidem', 'err'); return }
+          await setAlunoPass(nome, serie, senha);
+          toast('🔑 Senha criada com sucesso!', 'ok');
+        }
+        SESSION = { type: 'aluno', nome, serie };
+        await initAluno();
+        showScreen('aluno');
+      } catch(e) {
+        hideLoading();
+        toast('Erro de conexão. Tente novamente.', 'err');
+        console.error(e);
+      }
+    }
+
+    async function onAlunoChange() {
+      const nome = document.getElementById('alunoNome').value.trim();
+      const serie = document.getElementById('alunoSerie').value;
+      const confRow = document.getElementById('alunoSenhaConfRow');
+      const infoBox = document.getElementById('alunoSenhaInfo');
+      const senhaLabel = document.getElementById('alunoSenhaLabel');
+      if (nome && serie) {
+        infoBox.innerHTML = '⏳ Verificando...';
+        infoBox.classList.remove('hidden');
+        const temSenha = await alunoTemSenha(nome, serie);
+        confRow.classList.toggle('hidden', temSenha);
+        infoBox.innerHTML = temSenha
+          ? '🔐 Bem-vindo de volta! Digite sua senha para entrar.'
+          : '✨ Primeiro acesso! Crie uma senha pessoal para sua conta.';
+        senhaLabel.textContent = temSenha ? 'Sua Senha' : 'Criar Senha (mín. 4 caracteres)';
+      } else {
+        confRow.classList.add('hidden');
+        infoBox.classList.add('hidden');
+      }
+    }
+
+    async function loginEscola() {
+      const escola = document.getElementById('escolaNome').value.trim();
+      const coord = document.getElementById('escolaCoordenador').value.trim();
+      const senha = document.getElementById('escolaSenha').value;
+      const senhaConf = document.getElementById('escolaSenhaConf').value;
+      if (!escola) { toast('Digite o nome da escola', 'err'); return }
+      if (!coord) { toast('Digite o nome do coordenador', 'err'); return }
+
+      showLoading('Verificando acesso da escola...');
+      try {
+        const temSenha = await escolaTemSenha(escola);
+        if (temSenha) {
+          if (!senha) { hideLoading(); toast('Digite a senha', 'err'); return }
+          const senhaCorreta = await getPass(escola);
+          if (senha !== senhaCorreta) {
+            hideLoading();
+            toast('Senha incorreta!', 'err');
+            const f = document.getElementById('formEscola');
+            f.style.animation = 'none'; f.offsetHeight; f.style.animation = 'shake .4s ease';
+            return;
+          }
+        } else {
+          if (!senha || senha.length < 4) { hideLoading(); toast('Crie uma senha com no mínimo 4 caracteres', 'err'); return }
+          if (senha !== senhaConf) { hideLoading(); toast('As senhas não coincidem', 'err'); return }
+          await setPass(escola, senha);
+          toast('🏫 Escola cadastrada com sucesso!', 'ok');
+        }
+        SESSION = { type: 'escola', coordenador: coord, escola };
+        await initEscola();
+        showScreen('escola');
+      } catch(e) {
+        hideLoading();
+        toast('Erro de conexão. Tente novamente.', 'err');
+        console.error(e);
+      }
+    }
+
+    async function onEscolaChange() {
+      const escola = document.getElementById('escolaNome').value.trim();
+      const confRow = document.getElementById('escolaSenhaConfRow');
+      const infoBox = document.getElementById('escolaSenhaInfo');
+      const senhaLabel = document.getElementById('escolaSenhaLabel');
+      if (escola) {
+        infoBox.innerHTML = '⏳ Verificando...';
+        infoBox.classList.remove('hidden');
+        const temSenha = await escolaTemSenha(escola);
+        confRow.classList.toggle('hidden', temSenha);
+        infoBox.innerHTML = temSenha
+          ? '🔐 Escola encontrada! Digite a senha para entrar.'
+          : '✨ Primeiro acesso desta escola! Crie uma senha exclusiva.';
+        senhaLabel.textContent = temSenha ? 'Senha de Acesso' : 'Criar Senha (mín. 4 caracteres)';
+      } else {
+        confRow.classList.add('hidden');
+        infoBox.classList.add('hidden');
+      }
+    }
+
+    function togglePass() {
+      const i = document.getElementById('escolaSenha');
+      i.type = i.type === 'password' ? 'text' : 'password';
+    }
+
+    function toggleAlunoPass() {
+      const i = document.getElementById('alunoSenha');
+      i.type = i.type === 'password' ? 'text' : 'password';
+    }
+
+    function logout() {
+      SESSION = null;
+      // Limpa campos do login
+      document.getElementById('alunoNome').value = '';
+      document.getElementById('alunoSerie').value = '';
+      document.getElementById('alunoSenha').value = '';
+      document.getElementById('alunoSenhaConf').value = '';
+      document.getElementById('alunoSenhaInfo').classList.add('hidden');
+      document.getElementById('alunoSenhaConfRow').classList.add('hidden');
+      document.getElementById('escolaNome').value = '';
+      document.getElementById('escolaCoordenador').value = '';
+      document.getElementById('escolaSenha').value = '';
+      document.getElementById('escolaSenhaConf').value = '';
+      document.getElementById('escolaSenhaInfo').classList.add('hidden');
+      document.getElementById('escolaSenhaConfRow').classList.add('hidden');
+      showScreen('login');
+    }
+
+    /* ═══════════════════════════════════════════
+       PAINEL DO ALUNO
+    ═══════════════════════════════════════════ */
+    let selBookId = null;
+
+    async function initAluno() {
+      showLoading('Carregando biblioteca...');
+      await loadBooks();
+      await loadLoans();
+      await refreshStatuses();
+      await loadLoans(); // recarrega após refresh
+      hideLoading();
+      document.getElementById('hdrNome').textContent = SESSION.nome;
+      document.getElementById('hdrSerie').textContent = SESSION.serie;
+      document.getElementById('heroNome').textContent = SESSION.nome;
+      document.getElementById('heroSerie').textContent = SESSION.serie;
+      showTab('catalogo');
+      updateAlunoStats();
+    }
+
+    function updateAlunoStats() {
+      document.getElementById('statTotal').textContent = getBooks().length;
+      document.getElementById('statMeus').textContent =
+        getLoansByAluno(SESSION.nome, SESSION.serie).filter(l => l.status !== 'devolvido').length;
+    }
+
+    function showTab(name) {
+      ['catalogo', 'meus'].forEach(t => {
+        document.getElementById('tab-' + t).classList.toggle('hidden', t !== name);
+        document.getElementById('tab' + t.charAt(0).toUpperCase() + t.slice(1)).classList.toggle('active', t === name);
+      });
+      if (name === 'catalogo') renderBooks();
+      if (name === 'meus') renderMyLoans();
+    }
+
+    // Catálogo 
+    function renderBooks(filter = '') {
+      const grid = document.getElementById('booksGrid');
+      const empty = document.getElementById('emptySearch');
+      const books = getBooks();
+      const term = filter.toLowerCase().trim();
+      const list = term ? books.filter(b => b.title.toLowerCase().includes(term) || b.author.toLowerCase().includes(term)) : books;
+
+      grid.innerHTML = '';
+      empty.classList.toggle('hidden', list.length > 0);
+
+      list.forEach((book, i) => {
+        const avail = getAvailCopies(book.id);
+        const card = document.createElement('div');
+        card.className = 'book-card';
+        card.style.animationDelay = (i * .06) + 's';
+        card.onclick = () => openAgend(book.id);
+        card.innerHTML = `
+      ${book.coverBase64
+            ? `<img class="book-cover" src="${book.coverBase64}" alt="capa"/>`
+            : `<div class="book-cover-ph">📕<span>Sem capa</span></div>`}
+      <div class="book-info">
+        <p class="book-title">${book.title}</p>
+        <p class="book-author">${book.author}</p>
+        <span class="avail-tag ${avail > 0 ? 'tag-ok' : 'tag-no'}">${avail > 0 ? avail + ' disponível' + (avail > 1 ? 'is' : '') : 'Indisponível'}</span>
+      </div>`;
+        grid.appendChild(card);
+      });
+    }
+
+    function filterBooks() { renderBooks(document.getElementById('searchInput').value) }
+    function clearSearch() { document.getElementById('searchInput').value = ''; renderBooks() }
+
+    /* Agendamento */
+    async function openAgend(id) {
+      const book = getBookById(id);
+      if (!book) return;
+      if (getAvailCopies(id) === 0) { toast('📭 Livro indisponível no momento', 'err'); return }
+      const jaTem = getLoansByAluno(SESSION.nome, SESSION.serie).some(l => l.bookId === id && l.status !== 'devolvido');
+      if (jaTem) { toast('Você já está com este livro!', 'err'); return }
+
+      selBookId = id;
+      const coverEl = document.getElementById('agendCover');
+      coverEl.innerHTML = book.coverBase64 ? `<img src="${book.coverBase64}" style="width:100%;height:100%;object-fit:cover"/>` : '📕';
+      document.getElementById('agendTitle').textContent = book.title;
+      document.getElementById('agendAuthor').textContent = book.author;
+
+      const hoje = todayISO();
+      const prazo = await getPrazo();
+      const maxD = addDays(hoje, prazo);
+      const ret = document.getElementById('dateRet');
+      const dev = document.getElementById('dateDev');
+      ret.value = hoje; ret.min = hoje;
+      dev.value = maxD; dev.min = hoje; dev.max = maxD;
+      document.getElementById('prazoHint').textContent = `⏱ Prazo máximo: ${prazo} dias`;
+
+      ret.onchange = () => {
+        const max2 = addDays(ret.value, prazo);
+        dev.min = ret.value; dev.max = max2;
+        if (dev.value > max2) dev.value = max2;
+      };
+
+      document.getElementById('modalAgend').classList.remove('hidden');
+    }
+
+    function closeAgend() { document.getElementById('modalAgend').classList.add('hidden'); selBookId = null }
+
+    document.getElementById('modalAgend').addEventListener('click', e => { if (e.target === e.currentTarget) closeAgend() });
+
+    async function confirmarAgend() {
+      const ret = document.getElementById('dateRet').value;
+      const dev = document.getElementById('dateDev').value;
+      if (!ret || !dev) { toast('Preencha as datas', 'err'); return }
+      if (dev < ret) { toast('Devolução não pode ser antes da retirada', 'err'); return }
+      const book = getBookById(selBookId);
+      showLoading('Agendando empréstimo...');
+      try {
+        await addLoan({
+          bookId: selBookId, bookTitle: book.title, bookAuthor: book.author,
+          bookCover: book.coverBase64 || null, alunoNome: SESSION.nome, alunoSerie: SESSION.serie,
+          dateRetirada: ret, dateDevolucao: dev
+        });
+        closeAgend();
+        toast('✅ Agendamento confirmado!', 'ok');
+        renderBooks();
+        updateAlunoStats();
+      } catch(e) { toast('Erro ao agendar. Tente novamente.', 'err'); console.error(e); }
+      hideLoading();
+    }
+
+    /* Meus empréstimos */
+    function renderMyLoans() {
+      const list = document.getElementById('loansList');
+      const empty = document.getElementById('emptyLoans');
+      const loans = getLoansByAluno(SESSION.nome, SESSION.serie);
+      list.innerHTML = '';
+      empty.classList.toggle('hidden', loans.length > 0);
+      const ord = { atrasado: 0, ativo: 1, devolvido: 2 };
+      loans.sort((a, b) => (ord[a.status] || 0) - (ord[b.status] || 0));
+      loans.forEach((loan, i) => {
+        const labels = { ativo: '✅ Ativo', atrasado: '⏰ Atrasado', devolvido: '📦 Devolvido' };
+        const dias = loan.status === 'atrasado' ? ` — ${Math.abs(diffDays(todayISO(), loan.dateDevolucao))} dia(s) de atraso` : '';
+        const item = document.createElement('div');
+        item.className = 'loan-item';
+        item.style.animationDelay = (i * .07) + 's';
+        item.innerHTML = `
+      ${loan.bookCover ? `<img class="loan-thumb" src="${loan.bookCover}" alt="capa"/>` : `<div class="loan-thumb">📕</div>`}
+      <div class="loan-info">
+        <p class="loan-title">${loan.bookTitle}</p>
+        <p class="loan-author">${loan.bookAuthor}</p>
+        <div class="loan-dates">
+          <span>📥 Retirada: ${fmtDate(loan.dateRetirada)}</span>
+          <span>📤 Devolução: ${fmtDate(loan.dateDevolucao)}${dias}</span>
+        </div>
+      </div>
+      <span class="status-badge s-${loan.status}">${labels[loan.status] || loan.status}</span>`;
+        list.appendChild(item);
+      });
+    }
+
+    /* ═══════════════════════════════════════════
+       PAINEL DA ESCOLA
+    ═══════════════════════════════════════════ */
+    let loanFilter = 'todos';
+    let editLoanId = null;
+
+    async function initEscola() {
+      showLoading('Carregando painel...');
+      await loadBooks();
+      await loadLoans();
+      await loadAct();
+      await refreshStatuses();
+      await loadLoans();
+      const prazo = await getPrazo();
+      hideLoading();
+      document.getElementById('sbNome').textContent = SESSION.coordenador;
+      const sbEscola = document.getElementById('sbEscola');
+      if (sbEscola) sbEscola.textContent = SESSION.escola || 'Escola';
+      document.getElementById('cfgPrazo').value = prazo;
+      showPanel('dashboard', document.getElementById('nav-dashboard'));
+    }
+
+    function showPanel(name, btn) {
+      ['dashboard', 'livros', 'emprestimos', 'alertas', 'alunos', 'config'].forEach(p => {
+        document.getElementById('panel-' + p).classList.toggle('hidden', p !== name);
+      });
+      document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const loaders = {
+        dashboard: renderDashboard,
+        livros: () => renderEBooks(),
+        emprestimos: () => renderLoansTable(loanFilter),
+        alertas: renderAlerts,
+        alunos: renderAlunosTable,
+        config: async () => { document.getElementById('cfgPrazo').value = await getPrazo() },
+      };
+      if (loaders[name]) loaders[name]();
+    }
+
+    /* Alunos */
+    async function renderAlunosTable() {
+      const tbody = document.getElementById('alunosTbody');
+      const empty = document.getElementById('emptyAlunos');
+      const search = (document.getElementById('alunoSearch')?.value || '').toLowerCase().trim();
+      const serieFilter = document.getElementById('alunoSerieFilter')?.value || '';
+      const loans = getLoans();
+
+      let alunos = (await getAllAlunos()).map(a => ({
+        id: a.id,
+        nome: a.nome || a.id,
+        serie: a.serie || '',
+      }));
+
+      if (search) alunos = alunos.filter(a => a.nome.toLowerCase().includes(search) || a.serie.toLowerCase().includes(search));
+      if (serieFilter) alunos = alunos.filter(a => a.serie === serieFilter);
+
+      tbody.innerHTML = '';
+      empty.classList.toggle('hidden', alunos.length > 0);
+      alunos.sort((a, b) => a.nome.localeCompare(b.nome));
+
+      alunos.forEach(aluno => {
+        const ativos = loans.filter(l => l.alunoNome.toLowerCase() === aluno.nome.toLowerCase() && l.alunoSerie === aluno.serie && l.status !== 'devolvido');
+        const total = loans.filter(l => l.alunoNome.toLowerCase() === aluno.nome.toLowerCase() && l.alunoSerie === aluno.serie);
+        const temAtraso = ativos.some(l => l.status === 'atrasado');
+        const situacao = temAtraso
+          ? '<span class="chip c-atrasado">⏰ Com Atraso</span>'
+          : ativos.length > 0
+            ? '<span class="chip c-ativo">✅ Em Dia</span>'
+            : '<span class="chip" style="background:#F0EBE0;color:#8C7A62">📦 Sem Ativos</span>';
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><strong>${aluno.nome}</strong></td>
+          <td>${aluno.serie}</td>
+          <td>${ativos.length}</td>
+          <td>${total.length}</td>
+          <td>${situacao}</td>
+          <td>
+            <div class="tbl-acts">
+              <button class="btn btn-cancel btn-sm" onclick="verHistoricoAluno('${aluno.nome.replace(/'/g,"\'")}','${aluno.serie.replace(/'/g,"\'")}')">📋 Histórico</button>
+              <button class="btn btn-danger btn-sm" onclick="resetSenhaAluno('${aluno.id}','${aluno.nome.replace(/'/g,"\'")}')">🔑 Reset Senha</button>
+            </div>
+          </td>`;
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function resetSenhaAluno(docId, nome) {
+      if (!confirm('Remover a senha de ' + nome + '? O aluno precisará criar uma nova senha no próximo acesso.')) return;
+      showLoading('Removendo senha...');
+      try {
+        await deleteAlunoPass(docId);
+        await renderAlunosTable();
+        toast('🔑 Senha removida. Aluno deverá criar uma nova.', 'ok');
+      } catch(e) { toast('Erro ao remover senha', 'err'); }
+      hideLoading();
+    }
+
+    function verHistoricoAluno(nome, serie) {
+      const loans = getLoans().filter(l => l.alunoNome.toLowerCase() === nome.toLowerCase() && l.alunoSerie === serie);
+      document.getElementById('histAlunoNome').textContent = nome + ' — ' + serie;
+      const tbody = document.getElementById('histTbody');
+      tbody.innerHTML = '';
+      if (loans.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#9B8B74;padding:2rem">Nenhum empréstimo encontrado</td></tr>';
+      } else {
+        const chips = { ativo: 'chip c-ativo', atrasado: 'chip c-atrasado', devolvido: 'chip c-devolvido' };
+        const labels = { ativo: '✅ Ativo', atrasado: '⏰ Atrasado', devolvido: '📦 Devolvido' };
+        loans.slice().reverse().forEach(l => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${l.bookTitle}</td><td>${fmtDate(l.dateRetirada)}</td><td>${fmtDate(l.dateDevolucao)}</td><td><span class="${chips[l.status]||''}">${labels[l.status]||l.status}</span></td>`;
+          tbody.appendChild(tr);
+        });
+      }
+      document.getElementById('modalHistAluno').classList.remove('hidden');
+    }
+    function closeHistAluno() { document.getElementById('modalHistAluno').classList.add('hidden'); }
+
+    /* Dashboard */
+    async function renderDashboard() {
+      const loans = getLoans(), books = getBooks();
+      document.getElementById('kpiL').textContent = books.length;
+      const alunosCount = (await getAllAlunos()).length;
+      const kpiAlEl = document.getElementById('kpiAl');
+      if (kpiAlEl) kpiAlEl.textContent = alunosCount;
+      document.getElementById('kpiA').textContent = loans.filter(l => l.status === 'ativo').length;
+      document.getElementById('kpiAt').textContent = loans.filter(l => l.status === 'atrasado').length;
+      document.getElementById('kpiD').textContent = loans.filter(l => l.status === 'devolvido').length;
+      const actList = document.getElementById('actList');
+      const act = getAct();
+      actList.innerHTML = act.length === 0
+        ? '<p style="color:#9B8B74;font-size:.88rem">Nenhuma atividade ainda</p>'
+        : act.slice(0, 8).map(a => {
+          const dot = { new: 'd-new', late: 'd-late', returned: 'd-ret' }[a.type] || 'd-new';
+          const t = new Date(a.at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+          return `<div class="act-item"><span class="act-dot ${dot}"></span><span>${a.msg}</span><span class="act-time">${t}</span></div>`;
+        }).join('');
+      checkNotif();
+    }
+
+    function checkNotif() {
+      const n = getLateLoans().length;
+      const dot = document.getElementById('notifDot');
+      dot.textContent = n;
+      dot.classList.toggle('hidden', n === 0);
+    }
+
+    /* Alertas */
+    async function renderAlerts() {
+      const list = document.getElementById('alertsList');
+      const empty = document.getElementById('emptyAl');
+      await refreshStatuses();
+      const late = getLateLoans();
+      list.innerHTML = '';
+      empty.classList.toggle('hidden', late.length > 0);
+      late.forEach((loan, i) => {
+        const dias = Math.abs(diffDays(todayISO(), loan.dateDevolucao));
+        const card = document.createElement('div');
+        card.className = 'alert-card';
+        card.style.animationDelay = (i * .07) + 's';
+        card.innerHTML = `
+      <span class="alert-icon">⚠️</span>
+      <div class="alert-info">
+        <p class="alert-name">👤 ${loan.alunoNome}</p>
+        <p class="alert-detail">📚 "${loan.bookTitle}" • ${loan.alunoSerie}<br>
+          📅 Deveria devolver em: <strong>${fmtDate(loan.dateDevolucao)}</strong></p>
+      </div>
+      <span class="alert-days">${dias} dia${dias !== 1 ? 's' : ''} de atraso</span>`;
+        list.appendChild(card);
+      });
+    }
+
+    /* Livros escola */
+    function renderEBooks(filter = '') {
+      const grid = document.getElementById('eBooksGrid');
+      const empty = document.getElementById('emptyE');
+      const books = getBooks();
+      const term = filter.toLowerCase().trim();
+      const list = term ? books.filter(b => b.title.toLowerCase().includes(term) || b.author.toLowerCase().includes(term)) : books;
+      grid.innerHTML = '';
+      empty.classList.toggle('hidden', list.length > 0);
+      list.forEach((book, i) => {
+        const avail = getAvailCopies(book.id);
+        const card = document.createElement('div');
+        card.className = 'e-book-card';
+        card.style.animationDelay = (i * .06) + 's';
+        card.innerHTML = `
+      ${book.coverBase64 ? `<img class="book-cover" src="${book.coverBase64}" alt="capa"/>` : `<div class="book-cover-ph">📕<span>Sem capa</span></div>`}
+      <div class="book-info"><p class="book-title">${book.title}</p><p class="book-author">${book.author}</p></div>
+      <p class="book-qtd">📦 ${book.quantity || 1} exemplar${(book.quantity || 1) > 1 ? 'es' : ''} • ✅ ${avail} disponív${avail !== 1 ? 'eis' : 'el'}</p>
+      <div class="e-book-actions">
+        <button class="btn btn-danger btn-sm" onclick="confirmDel('${book.id}','${book.title.replace(/'/g, `\\'`)}')">🗑 Remover</button>
+      </div>`;
+        grid.appendChild(card);
+      });
+    }
+
+    function filterEBooks() { renderEBooks(document.getElementById('eSearch').value) }
+
+    async function confirmDel(id, title) {
+      if (confirm(`Remover "${title}" do acervo?`)) {
+        showLoading('Removendo...');
+        try { await deleteBook(id); renderEBooks(); renderDashboard(); toast('Livro removido'); }
+        catch(e) { toast('Erro ao remover', 'err'); }
+        hideLoading();
+      }
+    }
+
+    /* Add book modal */
+    function openAddBook() {
+      document.getElementById('newTitle').value = '';
+      document.getElementById('newAuthor').value = '';
+      document.getElementById('newQtd').value = '1';
+      document.getElementById('previewImg').src = '';
+      document.getElementById('previewImg').classList.add('hidden');
+      document.getElementById('uploadInner').classList.remove('hidden');
+      document.getElementById('fileIn').value = '';
+      document.getElementById('modalAddBook').classList.remove('hidden');
+    }
+    function closeAddBook() { document.getElementById('modalAddBook').classList.add('hidden') }
+    document.getElementById('modalAddBook').addEventListener('click', e => { if (e.target === e.currentTarget) closeAddBook() });
+
+    function previewImg(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      if (file.size > 5 * 1024 * 1024) { toast('Imagem muito grande (máx 5MB)', 'err'); return }
+      const reader = new FileReader();
+      reader.onload = ev => {
+        const img = document.getElementById('previewImg');
+        img.src = ev.target.result;
+        img.classList.remove('hidden');
+        document.getElementById('uploadInner').classList.add('hidden');
+      };
+      reader.readAsDataURL(file);
+    }
+
+    async function saveBook() {
+      const title = document.getElementById('newTitle').value.trim();
+      const author = document.getElementById('newAuthor').value.trim();
+      const qty = parseInt(document.getElementById('newQtd').value) || 1;
+      const imgEl = document.getElementById('previewImg');
+      if (!title) { toast('Digite o título', 'err'); return }
+      if (!author) { toast('Digite o autor', 'err'); return }
+      const cover = (!imgEl.classList.contains('hidden') && imgEl.src) ? imgEl.src : null;
+      showLoading('Salvando livro...');
+      try {
+        await addBook({ title, author, quantity: qty, coverBase64: cover });
+        closeAddBook();
+        renderEBooks();
+        renderDashboard();
+        toast('📚 Livro adicionado!', 'ok');
+      } catch(e) { toast('Erro ao salvar livro', 'err'); console.error(e); }
+      hideLoading();
+    }
+
+    /* Tabela de empréstimos */
+    function filterLoans(tipo, btn) {
+      loanFilter = tipo;
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderLoansTable(tipo);
+    }
+
+    function renderLoansTable(filter = 'todos') {
+      const tbody = document.getElementById('loansTbody');
+      const empty = document.getElementById('emptyLE');
+      let loans = getLoans();
+      if (filter !== 'todos') loans = loans.filter(l => l.status === filter);
+      tbody.innerHTML = '';
+      empty.classList.toggle('hidden', loans.length > 0);
+      const ord = { atrasado: 0, ativo: 1, devolvido: 2 };
+      loans.sort((a, b) => (ord[a.status] || 0) - (ord[b.status] || 0));
+      loans.forEach(loan => {
+        const chips = { ativo: 'chip c-ativo', atrasado: 'chip c-atrasado', devolvido: 'chip c-devolvido' };
+        const labels = { ativo: '✅ Ativo', atrasado: '⏰ Atrasado', devolvido: '📦 Devolvido' };
+        const active = loan.status !== 'devolvido';
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+      <td><strong>${loan.alunoNome}</strong></td>
+      <td>${loan.alunoSerie}</td>
+      <td>${loan.bookTitle}</td>
+      <td>${fmtDate(loan.dateRetirada)}</td>
+      <td>${fmtDate(loan.dateDevolucao)}</td>
+      <td><span class="${chips[loan.status] || ''}">${labels[loan.status] || loan.status}</span></td>
+      <td>
+        ${active ? `
+          <div class="tbl-acts">
+            <button class="btn btn-success btn-sm" onclick="marcarDev('${loan.id}')">✅ Devolvido</button>
+            <button class="btn btn-cancel btn-sm" onclick="openPrazoM('${loan.id}')">📅 Prazo</button>
+          </div>` : `<span style="color:#9B8B74;font-size:.8rem">—</span>`}
+      </td>`;
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function marcarDev(id) {
+      if (confirm('Confirmar devolução deste livro?')) {
+        showLoading('Registrando devolução...');
+        try {
+          await markReturned(id);
+          renderLoansTable(loanFilter);
+          renderDashboard();
+          checkNotif();
+          toast('✅ Livro devolvido!', 'ok');
+        } catch(e) { toast('Erro ao registrar devolução', 'err'); }
+        hideLoading();
+      }
+    }
+
+    function openPrazoM(id) {
+      const loan = getLoans().find(l => l.id === id);
+      if (!loan) return;
+      editLoanId = id;
+      document.getElementById('prazoLoanInfo').textContent = `${loan.alunoNome} — "${loan.bookTitle}"`;
+      document.getElementById('novaDev').value = loan.dateDevolucao;
+      document.getElementById('novaDev').min = todayISO();
+      document.getElementById('modalPrazo').classList.remove('hidden');
+    }
+    function closePrazoModal() { document.getElementById('modalPrazo').classList.add('hidden'); editLoanId = null }
+    document.getElementById('modalPrazo').addEventListener('click', e => { if (e.target === e.currentTarget) closePrazoModal() });
+
+    async function salvarPrazo() {
+      const d = document.getElementById('novaDev').value;
+      if (!d) { toast('Selecione uma data', 'err'); return }
+      showLoading('Salvando...');
+      try {
+        await updateLoanDev(editLoanId, d);
+        await refreshStatuses();
+        closePrazoModal();
+        renderLoansTable(loanFilter);
+        checkNotif();
+        toast('📅 Prazo atualizado!', 'ok');
+      } catch(e) { toast('Erro ao salvar prazo', 'err'); }
+      hideLoading();
+    }
+
+    /* Configurações */
+    async function savePrazo() {
+      const d = parseInt(document.getElementById('cfgPrazo').value);
+      if (!d || d < 1) { toast('Valor inválido', 'err'); return }
+      try { await setPrazo(d); toast(`✅ Prazo salvo: ${d} dias`, 'ok'); }
+      catch(e) { toast('Erro ao salvar prazo', 'err'); }
+    }
+
+    async function alterarSenha() {
+      const atual = document.getElementById('senhaAtual').value;
+      const nova = document.getElementById('senhaNova').value;
+      const conf = document.getElementById('senhaConf').value;
+      const escola = SESSION?.escola || '';
+      const senhaAtual = await getPass(escola);
+      if (atual !== senhaAtual) { toast('Senha atual incorreta!', 'err'); return }
+      if (!nova || nova.length < 4) { toast('Nova senha: mín. 4 caracteres', 'err'); return }
+      if (nova !== conf) { toast('As senhas não coincidem', 'err'); return }
+      try {
+        await setPass(escola, nova);
+        ['senhaAtual', 'senhaNova', 'senhaConf'].forEach(id => document.getElementById(id).value = '');
+        toast('🔑 Senha alterada!', 'ok');
+      } catch(e) { toast('Erro ao alterar senha', 'err'); }
+    }
+
+    /* ═══════════════════════════════════════════
+       INICIALIZAÇÃO
+    ═══════════════════════════════════════════ */
+    // Expõe funções para onclick handlers no HTML
+    window.switchType = switchType;
+    window.loginAluno = loginAluno;
+    window.loginEscola = loginEscola;
+    window.onAlunoChange = onAlunoChange;
+    window.onEscolaChange = onEscolaChange;
+    window.togglePass = togglePass;
+    window.toggleAlunoPass = toggleAlunoPass;
+    window.logout = logout;
+    window.showTab = showTab;
+    window.filterBooks = filterBooks;
+    window.clearSearch = clearSearch;
+    window.openAgend = openAgend;
+    window.closeAgend = closeAgend;
+    window.confirmarAgend = confirmarAgend;
+    window.showPanel = showPanel;
+    window.openAddBook = openAddBook;
+    window.closeAddBook = closeAddBook;
+    window.previewImg = previewImg;
+    window.saveBook = saveBook;
+    window.confirmDel = confirmDel;
+    window.filterEBooks = filterEBooks;
+    window.filterLoans = filterLoans;
+    window.marcarDev = marcarDev;
+    window.openPrazoM = openPrazoM;
+    window.closePrazoModal = closePrazoModal;
+    window.salvarPrazo = salvarPrazo;
+    window.savePrazo = savePrazo;
+    window.alterarSenha = alterarSenha;
+    window.renderAlunosTable = renderAlunosTable;
+    window.resetSenhaAluno = resetSenhaAluno;
+    window.verHistoricoAluno = verHistoricoAluno;
+    window.closeHistAluno = closeHistAluno;
+    window.exportAlunosCSV = exportAlunosCSV;
+    window.exportAlunosPDF = exportAlunosPDF;
+
     // Começa sempre na tela de login
     showScreen('login');
   </script>

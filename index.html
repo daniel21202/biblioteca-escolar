@@ -1702,6 +1702,10 @@
     <div class="login-card" id="formAluno">
       <h2>Acesso do Aluno</h2>
       <div class="field-group">
+        <label>Nome da Escola</label>
+        <input type="text" id="alunoEscola" placeholder="Ex: Escola Glorita" oninput="onAlunoChange()" />
+      </div>
+      <div class="field-group">
         <label>Nome completo</label>
         <input type="text" id="alunoNome" placeholder="Seu nome" oninput="onAlunoChange()" />
       </div>
@@ -2416,10 +2420,12 @@
     }
 
     async function loginAluno() {
+      const escola = document.getElementById('alunoEscola').value.trim();
       const nome = document.getElementById('alunoNome').value.trim();
       const serie = document.getElementById('alunoSerie').value;
       const senha = document.getElementById('alunoSenha').value;
       const senhaConf = document.getElementById('alunoSenhaConf').value;
+      if (!escola) { toast('Digite o nome da escola', 'err'); return }
       if (!nome) { toast('Digite seu nome', 'err'); return }
       if (!serie) { toast('Selecione sua série', 'err'); return }
 
@@ -2442,7 +2448,7 @@
           await setAlunoPass(nome, serie, senha);
           toast('🔑 Senha criada com sucesso!', 'ok');
         }
-        SESSION = { type: 'aluno', nome, serie };
+        SESSION = { type: 'aluno', nome, serie, escola };
         await initAluno();
         showScreen('aluno');
       } catch(e) {
@@ -2455,10 +2461,11 @@
     async function onAlunoChange() {
       const nome = document.getElementById('alunoNome').value.trim();
       const serie = document.getElementById('alunoSerie').value;
+      const escola = document.getElementById('alunoEscola').value.trim();
       const confRow = document.getElementById('alunoSenhaConfRow');
       const infoBox = document.getElementById('alunoSenhaInfo');
       const senhaLabel = document.getElementById('alunoSenhaLabel');
-      if (nome && serie) {
+      if (escola && nome && serie) {
         infoBox.innerHTML = '⏳ Verificando...';
         infoBox.classList.remove('hidden');
         const temSenha = await alunoTemSenha(nome, serie);
@@ -2543,6 +2550,7 @@
     function logout() {
       SESSION = null;
       // Limpa campos do login
+      document.getElementById('alunoEscola').value = '';
       document.getElementById('alunoNome').value = '';
       document.getElementById('alunoSerie').value = '';
       document.getElementById('alunoSenha').value = '';

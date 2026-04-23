@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>BiblioEscola</title>
+  <title>Biblioteca Escolar</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link
     href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=DM+Sans:wght@300;400;500&display=swap"
@@ -1646,18 +1646,72 @@
     width: 100%;
   }
 
-  /* Sidebar vira topo */
+  /* ── Escola: sidebar vira bottom nav ── */
+  #screen-escola {
+    flex-direction: column;
+  }
+
   .sidebar {
     position: fixed;
+    bottom: 0;
+    left: 0;
     width: 100%;
-    height: 190px;
+    height: auto;
     flex-direction: row;
     overflow-x: auto;
     z-index: 100;
+    padding: 0;
+    border-top: 2px solid rgba(255,255,255,.15);
   }
 
+  .sb-brand,
+  .sb-user {
+    display: none;
+  }
+
+  .sb-nav {
+    flex-direction: row;
+    flex: 1;
+    padding: 0;
+    gap: 0;
+    justify-content: space-around;
+    overflow-x: auto;
+  }
+
+  .nav-item {
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: .2rem;
+    padding: .6rem .5rem;
+    font-size: .65rem;
+    border-radius: 0;
+    flex: 1;
+    min-width: 52px;
+  }
+
+  .nav-item span:first-child {
+    font-size: 1.3rem;
+  }
+
+  .notif-dot {
+    position: absolute;
+    top: 4px;
+    right: 8px;
+    margin-left: 0;
+    font-size: .6rem;
+    padding: .05rem .35rem;
+  }
+
+  /* Botão flutuante para adicionar livro */
+  .fab-add-book {
+    display: flex !important;
+  }
+
+  /* Main com espaço para bottom nav */
   .main {
-    margin-top: 80px;
+    margin-top: 0;
+    padding-bottom: 70px;
   }
 
   /* Painel */
@@ -1675,6 +1729,73 @@
     padding: 1.5rem;
     margin: 0 1rem;
   }
+
+  /* Modal fullscreen no mobile */
+  .modal-overlay {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .modal-box {
+    border-radius: var(--r-lg) var(--r-lg) 0 0;
+    max-height: 92vh;
+    overflow-y: auto;
+    padding: 1.6rem 1.4rem 2rem;
+  }
+
+  .modal-box.lg {
+    max-width: 100%;
+  }
+
+  /* Upload area menor no mobile */
+  .upload-area {
+    min-height: 130px;
+  }
+
+  /* Tabela responsiva */
+  .loans-table th:nth-child(2),
+  .loans-table td:nth-child(2),
+  .loans-table th:nth-child(4),
+  .loans-table td:nth-child(4) {
+    display: none;
+  }
+
+  /* Panel header empilhado */
+  .panel-hdr {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  /* Oculta botão desktop de adicionar livro no mobile (usa FAB) */
+  .btn-add-desktop {
+    display: none !important;
+  }
+}
+
+/* FAB — visível só no mobile */
+.fab-add-book {
+  display: none;
+  position: fixed;
+  bottom: 80px;
+  right: 1.2rem;
+  z-index: 150;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--amber-dk);
+  color: #fff;
+  font-size: 1.6rem;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(0,0,0,.3);
+  align-items: center;
+  justify-content: center;
+  transition: var(--tr);
+}
+
+.fab-add-book:hover {
+  background: var(--amber);
+  transform: scale(1.08);
 }
   </style>
 </head>
@@ -1863,6 +1984,9 @@
   <!-- ═══════════════════ TELA: ESCOLA ═══════════════════ -->
   <div id="screen-escola" class="hidden">
 
+  <!-- Botão flutuante para adicionar livro (mobile) -->
+  <button class="fab-add-book" id="fabAddBook" onclick="openAddBook()" title="Adicionar Livro">+</button>
+
     <aside class="sidebar">
       <div class="sb-brand">
         <span class="sb-logo">📚</span>
@@ -1929,7 +2053,7 @@
           <div>
             <h1>Acervo de Livros</h1>
           </div>
-          <button class="btn-add" onclick="openAddBook()">+ Adicionar Livro</button>
+          <button class="btn-add btn-add-desktop" onclick="openAddBook()">+ Adicionar Livro</button>
         </div>
         <input class="escola-search" type="text" id="eSearch" placeholder="🔍 Buscar livro..."
           oninput="filterEBooks()" />
@@ -2067,6 +2191,9 @@
     </main>
   </div>
 
+  <!-- FAB Mobile: Adicionar Livro -->
+  <button class="fab-add-book" id="fabAddBook" onclick="openAddBook()" title="Adicionar Livro">＋</button>
+
   <!-- Modal Adicionar Livro -->
   <div class="modal-overlay hidden" id="modalAddBook">
     <div class="modal-box lg">
@@ -2075,7 +2202,7 @@
       <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileIn').click()">
         <div class="upload-inner" id="uploadInner">
           <span class="upload-icon">📷</span>
-          <p>Clique para selecionar a foto da capa</p>
+          <p>Toque para tirar foto ou escolher da galeria</p>
           <small>JPG, PNG — máx 5MB</small>
         </div>
         <img id="previewImg" class="preview-img hidden" alt="capa" />
@@ -2749,6 +2876,9 @@
       });
       document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
+      // FAB só aparece no painel de livros (mobile)
+      const fab = document.getElementById('fabAddBook');
+      if (fab) fab.style.display = (name === 'livros') ? 'flex' : 'none';
       const loaders = {
         dashboard: renderDashboard,
         livros: () => renderEBooks(),

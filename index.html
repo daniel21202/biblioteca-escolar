@@ -211,10 +211,12 @@
       backdrop-filter: blur(4px);
       z-index: 200;
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       justify-content: center;
       padding: 1rem;
-      animation: fadeIn .2s ease
+      animation: fadeIn .2s ease;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch
     }
 
     .modal-box {
@@ -225,7 +227,11 @@
       max-width: 480px;
       position: relative;
       box-shadow: var(--sh-lg);
-      animation: slideUp .28s cubic-bezier(.4, 0, .2, 1)
+      animation: slideUp .28s cubic-bezier(.4, 0, .2, 1);
+      margin: auto 0;
+      max-height: calc(100vh - 2rem);
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch
     }
 
     .modal-box.lg {
@@ -871,6 +877,28 @@
       color: #8C7A62
     }
 
+    .book-sinopse {
+      font-size: .76rem;
+      color: #6B5840;
+      margin-top: .4rem;
+      line-height: 1.5;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden
+    }
+
+    .modal-sinopse {
+      font-size: .88rem;
+      color: #6B5840;
+      background: #F9F5EE;
+      border-left: 3px solid var(--amber);
+      border-radius: 0 var(--r-sm) var(--r-sm) 0;
+      padding: .7rem 1rem;
+      margin-bottom: .8rem;
+      line-height: 1.6
+    }
+
     .avail-tag {
       margin-top: .6rem;
       font-size: .72rem;
@@ -1001,7 +1029,8 @@
 ═══════════════════════════════════════════ */
     #screen-escola {
       display: flex;
-      min-height: 100vh
+      height: 100vh;
+      overflow: hidden
     }
 
     /* Sidebar */
@@ -1138,7 +1167,9 @@
     .main {
       flex: 1;
       overflow-x: hidden;
-      min-height: 100vh
+      overflow-y: auto;
+      min-height: 100vh;
+      -webkit-overflow-scrolling: touch
     }
 
     .panel {
@@ -1604,186 +1635,207 @@
     }
 
     /* 📱 MOBILE */
-@media (max-width: 768px) {
+    @media (max-width: 768px) {
 
-  /* ── Tela aluno: topo ── */
-  .top-bar {
-    flex-direction: column;
-    padding: .8rem 1rem;
-    gap: .5rem;
-  }
+      /* ── Tela aluno: topo ── */
+      .top-bar {
+        flex-direction: column;
+        padding: .8rem 1rem;
+        gap: .5rem;
+      }
 
-  .top-center {
-    width: 100%;
-  }
+      .top-center {
+        width: 100%;
+      }
 
-  /* Hero */
-  .hero {
-    flex-direction: column;
-    align-items: flex-start;
-    padding: 1.5rem 1rem;
-  }
+      /* Hero */
+      .hero {
+        flex-direction: column;
+        align-items: flex-start;
+        padding: 1.5rem 1rem;
+      }
 
-  .hero h1 {
-    font-size: 1.6rem;
-  }
+      .hero h1 {
+        font-size: 1.6rem;
+      }
 
-  /* Tabs */
-  .tabs {
-    overflow-x: auto;
-    padding: 0 1rem 1rem;
-  }
+      /* Tabs */
+      .tabs {
+        overflow-x: auto;
+        padding: 0 1rem 1rem;
+      }
 
-  /* Grid de livros */
-  .books-grid,
-  .e-books-grid {
-    grid-template-columns: repeat(2, 1fr);
-    gap: 1rem;
-  }
+      /* Grid de livros */
+      .books-grid,
+      .e-books-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 1rem;
+      }
 
-  .book-card {
-    width: 100%;
-  }
+      .book-card {
+        width: 100%;
+      }
 
-  /* ── ESCOLA: layout mobile ── */
-  #screen-escola {
-    flex-direction: column;
-  }
+      /* ── ESCOLA: layout mobile ── */
+      #screen-escola {
+        flex-direction: column;
+        height: auto;
+        overflow: visible;
+      }
 
-  /* Sidebar vira navbar horizontal no topo */
-  .sidebar {
-    position: sticky;
-    top: 0;
-    width: 100%;
-    height: auto;
-    flex-direction: column;
-    overflow: visible;
-    z-index: 100;
-    padding: 0;
-  }
+      .main {
+        min-height: 0;
+        overflow-y: visible;
+      }
 
-  /* Linha 1: logo + avatar + logout */
-  .sb-brand {
-    display: flex;
-    align-items: center;
-    padding: .75rem 1rem;
-    border-bottom: 1px solid rgba(255,255,255,.12);
-    margin-bottom: 0;
-  }
+      /* Sidebar vira navbar horizontal no topo */
+      .sidebar {
+        position: sticky;
+        top: 0;
+        width: 100%;
+        height: auto;
+        flex-direction: column;
+        overflow: visible;
+        z-index: 100;
+        padding: 0;
+      }
 
-  .sb-user {
-    margin-left: auto;
-    padding: 0;
-    border-top: none;
-    gap: .5rem;
-  }
+      /* Linha 1: logo + avatar + logout */
+      .sb-brand {
+        display: flex;
+        align-items: center;
+        padding: .75rem 1rem;
+        border-bottom: 1px solid rgba(255, 255, 255, .12);
+        margin-bottom: 0;
+      }
 
-  .sb-name, .sb-role {
-    display: none;
-  }
+      .sb-user {
+        margin-left: auto;
+        padding: 0;
+        border-top: none;
+        gap: .5rem;
+      }
 
-  /* Linha 2: botões de nav em linha */
-  .sb-nav {
-    flex-direction: row;
-    padding: .3rem .5rem;
-    gap: .2rem;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-    border-bottom: 1px solid rgba(255,255,255,.08);
-  }
+      .sb-name,
+      .sb-role {
+        display: none;
+      }
 
-  .sb-nav::-webkit-scrollbar {
-    display: none;
-  }
+      /* Linha 2: botões de nav em linha */
+      .sb-nav {
+        flex-direction: row;
+        padding: .3rem .5rem;
+        gap: .2rem;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+        border-bottom: 1px solid rgba(255, 255, 255, .08);
+      }
 
-  .nav-item {
-    flex-direction: column;
-    gap: .15rem;
-    padding: .45rem .7rem;
-    font-size: .7rem;
-    white-space: nowrap;
-    border-radius: var(--r-sm);
-    min-width: fit-content;
-  }
+      .sb-nav::-webkit-scrollbar {
+        display: none;
+      }
 
-  .nav-item span:first-child {
-    font-size: 1.2rem;
-  }
+      .nav-item {
+        flex-direction: column;
+        gap: .15rem;
+        padding: .45rem .7rem;
+        font-size: .7rem;
+        white-space: nowrap;
+        border-radius: var(--r-sm);
+        min-width: fit-content;
+      }
 
-  .notif-dot {
-    position: absolute;
-    top: 2px;
-    right: 2px;
-    margin-left: 0;
-    font-size: .6rem;
-    padding: .05rem .3rem;
-  }
+      .nav-item span:first-child {
+        font-size: 1.2rem;
+      }
 
-  /* Main ocupa tudo abaixo da navbar */
-  .main {
-    margin-top: 0;
-    min-height: calc(100vh - 110px);
-  }
+      .notif-dot {
+        position: absolute;
+        top: 2px;
+        right: 2px;
+        margin-left: 0;
+        font-size: .6rem;
+        padding: .05rem .3rem;
+      }
 
-  /* Painel */
-  .panel {
-    padding: 1rem;
-  }
+      /* Main ocupa tudo abaixo da navbar */
+      .main {
+        margin-top: 0;
+        min-height: calc(100vh - 110px);
+      }
 
-  .panel-hdr {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: .6rem;
-    margin-bottom: 1.2rem;
-  }
+      /* Painel */
+      .panel {
+        padding: 1rem;
+      }
 
-  .panel-hdr h1 {
-    font-size: 1.4rem;
-  }
+      .panel-hdr {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: .6rem;
+        margin-bottom: 1.2rem;
+      }
 
-  /* KPI */
-  .kpi-grid {
-    grid-template-columns: 1fr 1fr;
-    gap: .8rem;
-  }
+      .panel-hdr h1 {
+        font-size: 1.4rem;
+      }
 
-  .kpi-card {
-    padding: 1rem 1rem;
-    gap: .7rem;
-  }
+      /* KPI */
+      .kpi-grid {
+        grid-template-columns: 1fr 1fr;
+        gap: .8rem;
+      }
 
-  .kpi-num {
-    font-size: 1.6rem;
-  }
+      .kpi-card {
+        padding: 1rem 1rem;
+        gap: .7rem;
+      }
 
-  /* Tabela de empréstimos: scroll horizontal */
-  .tbl-wrap {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
+      .kpi-num {
+        font-size: 1.6rem;
+      }
 
-  .loans-table {
-    min-width: 600px;
-  }
+      /* Tabela de empréstimos: scroll horizontal */
+      .tbl-wrap {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+      }
 
-  /* Alertas */
-  .alert-card {
-    flex-wrap: wrap;
-    gap: .7rem;
-  }
+      .loans-table {
+        min-width: 600px;
+      }
 
-  .alert-days {
-    width: 100%;
-    text-align: center;
-  }
+      /* Alertas */
+      .alert-card {
+        flex-wrap: wrap;
+        gap: .7rem;
+      }
 
-  /* Login */
-  .login-card {
-    padding: 1.5rem;
-    margin: 0 1rem;
-  }
-}
+      .alert-days {
+        width: 100%;
+        text-align: center;
+      }
+
+      /* Login */
+      .login-card {
+        padding: 1.5rem;
+        margin: 0 1rem;
+      }
+
+      /* Modal com scroll em telas pequenas */
+      .modal-overlay {
+        align-items: flex-start;
+        padding: .5rem;
+      }
+
+      .modal-box {
+        padding: 1.6rem 1.2rem;
+        max-height: calc(100vh - 1rem);
+        border-radius: var(--r);
+        margin: 0;
+      }
+    }
   </style>
 </head>
 
@@ -1950,6 +2002,7 @@
       <div class="modal-cover-box" id="agendCover">📕</div>
       <h2 class="modal-title" id="agendTitle">—</h2>
       <p class="modal-sub" id="agendAuthor">—</p>
+      <p class="modal-sinopse hidden" id="agendSinopse"></p>
       <div class="modal-fields">
         <div class="field-group">
           <label>Data de Retirada</label>
@@ -2105,8 +2158,10 @@
           </div>
         </div>
         <div style="display:flex;gap:.8rem;margin-bottom:1.4rem;flex-wrap:wrap;align-items:center">
-          <input class="escola-search" type="text" id="alunoSearch" placeholder="🔍 Buscar aluno..." oninput="renderAlunosTable()" style="margin-bottom:0;flex:1;min-width:200px" />
-          <select id="alunoSerieFilter" onchange="renderAlunosTable()" style="padding:.7rem 1.1rem;border:1.5px solid var(--border);border-radius:50px;font-family:'DM Sans',sans-serif;font-size:.9rem;background:#fff;outline:none;min-width:200px">
+          <input class="escola-search" type="text" id="alunoSearch" placeholder="🔍 Buscar aluno..."
+            oninput="renderAlunosTable()" style="margin-bottom:0;flex:1;min-width:200px" />
+          <select id="alunoSerieFilter" onchange="renderAlunosTable()"
+            style="padding:.7rem 1.1rem;border:1.5px solid var(--border);border-radius:50px;font-family:'DM Sans',sans-serif;font-size:.9rem;background:#fff;outline:none;min-width:200px">
             <option value="">Todas as séries</option>
             <option>1º Ano — Ensino Fundamental</option>
             <option>2º Ano — Ensino Fundamental</option>
@@ -2196,6 +2251,10 @@
             placeholder="Ex: Miguel de Cervantes" /></div>
         <div class="field-group"><label>Quantidade de Exemplares</label><input type="number" id="newQtd" min="1"
             value="1" /></div>
+        <div class="field-group">
+          <label>Sinopse <span style="font-size:.75rem;font-weight:400;color:#8C7A62;text-transform:none;letter-spacing:0">(opcional)</span></label>
+          <textarea id="newSinopse" rows="4" placeholder="Breve descrição do livro para os alunos..." style="resize:vertical;line-height:1.5"></textarea>
+        </div>
       </div>
       <div class="modal-actions">
         <button class="btn btn-cancel" onclick="closeAddBook()">Cancelar</button>
@@ -2269,7 +2328,7 @@
       appId: "1:80392046952:web:0b41b52f9148f1a75ceedd"
     };
     const app = initializeApp(firebaseConfig);
-    const db  = getFirestore(app);
+    const db = getFirestore(app);
 
     /* ═══════════════════════════════════════════
        HELPERS DE COLEÇÃO POR ESCOLA
@@ -2280,7 +2339,7 @@
     function escolaId() {
       return SESSION?.escola?.trim().toLowerCase().replace(/\s+/g, '_') || '_sem_escola';
     }
-    function col(sub)  { return collection(db, 'escolas', escolaId(), sub); }
+    function col(sub) { return collection(db, 'escolas', escolaId(), sub); }
     function docRef(sub, id) { return doc(db, 'escolas', escolaId(), sub, id); }
     function escolaDoc() { return doc(db, 'escolas', escolaId()); }
 
@@ -2312,7 +2371,7 @@
     /* ═══════════════════════════════════════════
        SENHAS DE ALUNOS — coleção global "alunos"
     ═══════════════════════════════════════════ */
-    function alunoPassKey(nome, serie) { return (nome + '_' + serie).toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_]/g,''); }
+    function alunoPassKey(nome, serie) { return (nome + '_' + serie).toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, ''); }
 
     async function getAlunoPass(nome, serie) {
       try {
@@ -2338,12 +2397,12 @@
     ═══════════════════════════════════════════ */
     async function getPass(escola) {
       try {
-        const snap = await getDoc(doc(db, 'escolas', escola.trim().toLowerCase().replace(/\s+/g,'_')));
+        const snap = await getDoc(doc(db, 'escolas', escola.trim().toLowerCase().replace(/\s+/g, '_')));
         return snap.exists() ? (snap.data().senha || null) : null;
       } catch { return null; }
     }
     async function setPass(escola, senha) {
-      const ref = doc(db, 'escolas', escola.trim().toLowerCase().replace(/\s+/g,'_'));
+      const ref = doc(db, 'escolas', escola.trim().toLowerCase().replace(/\s+/g, '_'));
       const snap = await getDoc(ref);
       if (snap.exists()) {
         await updateDoc(ref, { senha });
@@ -2559,7 +2618,7 @@
         SESSION = { type: 'aluno', nome, serie, escola };
         await initAluno();
         showScreen('aluno');
-      } catch(e) {
+      } catch (e) {
         hideLoading();
         toast('Erro de conexão. Tente novamente.', 'err');
         console.error(e);
@@ -2618,7 +2677,7 @@
         SESSION = { type: 'escola', coordenador: coord, escola };
         await initEscola();
         showScreen('escola');
-      } catch(e) {
+      } catch (e) {
         hideLoading();
         toast('Erro de conexão. Tente novamente.', 'err');
         console.error(e);
@@ -2733,6 +2792,7 @@
       <div class="book-info">
         <p class="book-title">${book.title}</p>
         <p class="book-author">${book.author}</p>
+        ${book.sinopse ? `<p class="book-sinopse">${book.sinopse}</p>` : ''}
         <span class="avail-tag ${avail > 0 ? 'tag-ok' : 'tag-no'}">${avail > 0 ? avail + ' disponível' + (avail > 1 ? 'is' : '') : 'Indisponível'}</span>
       </div>`;
         grid.appendChild(card);
@@ -2755,6 +2815,11 @@
       coverEl.innerHTML = book.coverBase64 ? `<img src="${book.coverBase64}" style="width:100%;height:100%;object-fit:cover"/>` : '📕';
       document.getElementById('agendTitle').textContent = book.title;
       document.getElementById('agendAuthor').textContent = book.author;
+      const agendSinopse = document.getElementById('agendSinopse');
+      if (agendSinopse) {
+        agendSinopse.textContent = book.sinopse || '';
+        agendSinopse.classList.toggle('hidden', !book.sinopse);
+      }
 
       const hoje = todayISO();
       const prazo = await getPrazo();
@@ -2795,7 +2860,7 @@
         toast('✅ Agendamento confirmado!', 'ok');
         renderBooks();
         updateAlunoStats();
-      } catch(e) { toast('Erro ao agendar. Tente novamente.', 'err'); console.error(e); }
+      } catch (e) { toast('Erro ao agendar. Tente novamente.', 'err'); console.error(e); }
       hideLoading();
     }
 
@@ -2907,8 +2972,8 @@
           <td>${situacao}</td>
           <td>
             <div class="tbl-acts">
-              <button class="btn btn-cancel btn-sm" onclick="verHistoricoAluno('${aluno.nome.replace(/'/g,"\'")}','${aluno.serie.replace(/'/g,"\'")}')">📋 Histórico</button>
-              <button class="btn btn-danger btn-sm" onclick="resetSenhaAluno('${aluno.id}','${aluno.nome.replace(/'/g,"\'")}')">🔑 Reset Senha</button>
+              <button class="btn btn-cancel btn-sm" onclick="verHistoricoAluno('${aluno.nome.replace(/'/g, "\'")}','${aluno.serie.replace(/'/g, "\'")}')">📋 Histórico</button>
+              <button class="btn btn-danger btn-sm" onclick="resetSenhaAluno('${aluno.id}','${aluno.nome.replace(/'/g, "\'")}')">🔑 Reset Senha</button>
             </div>
           </td>`;
         tbody.appendChild(tr);
@@ -2922,7 +2987,7 @@
         await deleteAlunoPass(docId);
         await renderAlunosTable();
         toast('🔑 Senha removida. Aluno deverá criar uma nova.', 'ok');
-      } catch(e) { toast('Erro ao remover senha', 'err'); }
+      } catch (e) { toast('Erro ao remover senha', 'err'); }
       hideLoading();
     }
 
@@ -2938,7 +3003,7 @@
         const labels = { ativo: '✅ Ativo', atrasado: '⏰ Atrasado', devolvido: '📦 Devolvido' };
         loans.slice().reverse().forEach(l => {
           const tr = document.createElement('tr');
-          tr.innerHTML = `<td>${l.bookTitle}</td><td>${fmtDate(l.dateRetirada)}</td><td>${fmtDate(l.dateDevolucao)}</td><td><span class="${chips[l.status]||''}">${labels[l.status]||l.status}</span></td>`;
+          tr.innerHTML = `<td>${l.bookTitle}</td><td>${fmtDate(l.dateRetirada)}</td><td>${fmtDate(l.dateDevolucao)}</td><td><span class="${chips[l.status] || ''}">${labels[l.status] || l.status}</span></td>`;
           tbody.appendChild(tr);
         });
       }
@@ -3031,7 +3096,7 @@
       if (confirm(`Remover "${title}" do acervo?`)) {
         showLoading('Removendo...');
         try { await deleteBook(id); renderEBooks(); renderDashboard(); toast('Livro removido'); }
-        catch(e) { toast('Erro ao remover', 'err'); }
+        catch (e) { toast('Erro ao remover', 'err'); }
         hideLoading();
       }
     }
@@ -3041,6 +3106,7 @@
       document.getElementById('newTitle').value = '';
       document.getElementById('newAuthor').value = '';
       document.getElementById('newQtd').value = '1';
+      document.getElementById('newSinopse').value = '';
       document.getElementById('previewImg').src = '';
       document.getElementById('previewImg').classList.add('hidden');
       document.getElementById('uploadInner').classList.remove('hidden');
@@ -3068,18 +3134,19 @@
       const title = document.getElementById('newTitle').value.trim();
       const author = document.getElementById('newAuthor').value.trim();
       const qty = parseInt(document.getElementById('newQtd').value) || 1;
+      const sinopse = document.getElementById('newSinopse').value.trim();
       const imgEl = document.getElementById('previewImg');
       if (!title) { toast('Digite o título', 'err'); return }
       if (!author) { toast('Digite o autor', 'err'); return }
       const cover = (!imgEl.classList.contains('hidden') && imgEl.src) ? imgEl.src : null;
       showLoading('Salvando livro...');
       try {
-        await addBook({ title, author, quantity: qty, coverBase64: cover });
+        await addBook({ title, author, quantity: qty, coverBase64: cover, sinopse: sinopse || '' });
         closeAddBook();
         renderEBooks();
         renderDashboard();
         toast('📚 Livro adicionado!', 'ok');
-      } catch(e) { toast('Erro ao salvar livro', 'err'); console.error(e); }
+      } catch (e) { toast('Erro ao salvar livro', 'err'); console.error(e); }
       hideLoading();
     }
 
@@ -3132,7 +3199,7 @@
           renderDashboard();
           checkNotif();
           toast('✅ Livro devolvido!', 'ok');
-        } catch(e) { toast('Erro ao registrar devolução', 'err'); }
+        } catch (e) { toast('Erro ao registrar devolução', 'err'); }
         hideLoading();
       }
     }
@@ -3160,7 +3227,7 @@
         renderLoansTable(loanFilter);
         checkNotif();
         toast('📅 Prazo atualizado!', 'ok');
-      } catch(e) { toast('Erro ao salvar prazo', 'err'); }
+      } catch (e) { toast('Erro ao salvar prazo', 'err'); }
       hideLoading();
     }
 
@@ -3169,7 +3236,7 @@
       const d = parseInt(document.getElementById('cfgPrazo').value);
       if (!d || d < 1) { toast('Valor inválido', 'err'); return }
       try { await setPrazo(d); toast(`✅ Prazo salvo: ${d} dias`, 'ok'); }
-      catch(e) { toast('Erro ao salvar prazo', 'err'); }
+      catch (e) { toast('Erro ao salvar prazo', 'err'); }
     }
 
     async function alterarSenha() {
@@ -3185,7 +3252,7 @@
         await setPass(escola, nova);
         ['senhaAtual', 'senhaNova', 'senhaConf'].forEach(id => document.getElementById(id).value = '');
         toast('🔑 Senha alterada!', 'ok');
-      } catch(e) { toast('Erro ao alterar senha', 'err'); }
+      } catch (e) { toast('Erro ao alterar senha', 'err'); }
     }
 
     /* ═══════════════════════════════════════════
